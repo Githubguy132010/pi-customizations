@@ -28,5 +28,6 @@ pi install .
 - Limits the active model toolset to `bash` and `ask_question`
 - Adds an asynchronous `ask_question` tool: the model can queue several questions, react to answers while the overlay remains open, and add, replace, or close follow-up questions
 - Adds `/yeet` for GPT-5.6 Luna commit-message, feature-branch, and PR-description generation with interactive commit/push/PR automation
+- Shows a clickable `PR #1234` indicator in the bottom bar when the current branch has a GitHub pull request
 - Adds `/land [PR-number-or-URL]` to select one or more open GitHub PRs, merge or close them, and optionally delete their local and remote branches (`--dry-run` previews each selected plan)
 - Persists session working directory so it is restored on `/resume` and `/reload`

@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 
 import { runCommand, summarizeError } from "../utils/exec";
+import { refreshPullRequestStatus } from "../events/prStatus";
 import {
   collectGitRemotes,
   formatRemoteOption,
@@ -488,5 +489,6 @@ export async function runLandWorkflow(
     }
   } finally {
     ctx.ui.setStatus(LAND_STATUS_PREFIX, undefined);
+    await refreshPullRequestStatus(pi, ctx);
   }
 }

@@ -3,6 +3,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 
 import { runCommand, summarizeError } from "../utils/exec";
 import { runLandWorkflow } from "./land";
+import { refreshPullRequestStatus } from "../events/prStatus";
 import {
   collectGitRemotes,
   formatPrBody,
@@ -549,5 +550,6 @@ export async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: Exten
     }
   } finally {
     ctx.ui.setStatus(YEET_STATUS_PREFIX, undefined);
+    await refreshPullRequestStatus(pi, ctx);
   }
 }

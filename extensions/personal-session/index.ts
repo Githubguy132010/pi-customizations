@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { handleSessionShutdown, handleSessionStart } from "../personal/events/session";
+import { refreshPullRequestStatus } from "../personal/events/prStatus";
 
 export default function (pi: ExtensionAPI) {
   pi.on(
@@ -9,6 +10,10 @@ export default function (pi: ExtensionAPI) {
       handleSessionStart(pi, event, ctx);
     },
   );
+
+  pi.on("turn_end", (_event, ctx: ExtensionContext) => {
+    void refreshPullRequestStatus(pi, ctx);
+  });
 
   pi.on(
     "session_shutdown",
