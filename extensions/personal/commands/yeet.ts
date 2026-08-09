@@ -16,6 +16,84 @@ import {
 
 export const YEET_STATUS_PREFIX = "yeet";
 
+const COMMIT_MESSAGE_MODEL = {
+  provider: "openai-codex",
+  id: "gpt-5.6-luna",
+} as const;
+const MAX_DIFF_CHARS = 80_000;
+
+async function generateCommitMessage(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  repoRoot: string,
+  status: string,
+): Promise<string> {
+  const model = ctx.modelRegistry.find(COMMIT_MESSAGE_MODEL.provider, COMMIT_MESSAGE_MODEL.id);
+  if (!model) {
+    throw new Error(`${COMMIT_MESSAGE_MODEL.provider}/${COMMIT_MESSAGE_MODEL.id} is not available`);
+  }
+  if (!ctx.modelRegistry.hasConfiguredAuth(model)) {
+    throw new Error(`no authentication configured for ${COMMIT_MESSAGE_MODEL.provider}/${COMMIT_MESSAGE_MODEL.id}`);
+  }
+
+  const diffResult = await runCommand(
+    pi,
+    "git",
+    ["diff", "--no-ext-diff", "--no-color", "HEAD"],
+    repoRoot,
+  );
+  const rawDiff = diffResult.code === 0 ? diffResult.stdout : "(Diff unavailable; infer from git status.)";
+  const diff = rawDiff.length > MAX_DIFF_CHARS
+    ? `${rawDiff.slice(0, MAX_DIFF_CHARS)}\n\n[diff truncated]`
+    : rawDiff;
+
+  const response = await ctx.modelRegistry.complete(
+    model,
+    {
+      systemPrompt: [
+        "Generate one concise git commit subject for the supplied changes.",
+        "Use conventional commits when appropriate (for example feat:, fix:, refactor:, docs:, chore:).",
+        "Use imperative mood, keep it at most 72 characters, and output only the subject with no quotes or markdown.",
+      ].join(" "),
+      messages: [{
+        role: "user",
+        content: [{
+          type: "text",
+          text: `Git status:\n${status.trim()}\n\nDiff:\n${diff}`,
+        }],
+        timestamp: Date.now(),
+      }],
+    },
+    {
+      reasoningEffort: "minimal",
+      textVerbosity: "low",
+      cacheRetention: "none",
+      maxTokens: 256,
+    },
+  );
+
+  if (response.stopReason !== "stop") {
+    throw new Error(response.errorMessage || `model stopped with ${response.stopReason}`);
+  }
+
+  const generated = response.content
+    .filter((content): content is { type: "text"; text: string } => content.type === "text")
+    .map((content) => content.text)
+    .join("\n")
+    .trim()
+    .split("\n")
+    .find((line) => line.trim().length > 0)
+    ?.trim()
+    .replace(/^`+|`+$/g, "")
+    .replace(/^["']|["']$/g, "");
+
+  if (!generated) {
+    throw new Error("model returned an empty commit message");
+  }
+
+  return generated;
+}
+
 export async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
   if (!ctx.hasUI) {
     ctx.ui.notify("/yeet requires interactive UI for now", "warning");
@@ -52,20 +130,28 @@ export async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: Exten
   const doPr = workflow === "Commit + push + create PR";
 
   let commitMessage = args.trim();
-  if (hasChanges) {
-    if (!commitMessage) {
+  if (hasChanges && !commitMessage) {
+    ctx.ui.setStatus(YEET_STATUS_PREFIX, "Generating commit message with GPT-5.6 Luna...");
+    try {
+      commitMessage = await generateCommitMessage(pi, ctx, repoRoot, status.stdout);
+      ctx.ui.notify(`/yeet: generated commit message: "${commitMessage}"`, "info");
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      ctx.ui.notify(`/yeet: commit message generation failed (${detail}); enter one manually`, "warning");
       const message = await ctx.ui.input("Commit message", "chore: ");
       if (!message) {
         ctx.ui.notify("/yeet canceled", "warning");
         return;
       }
       commitMessage = message.trim();
+    } finally {
+      ctx.ui.setStatus(YEET_STATUS_PREFIX, undefined);
     }
+  }
 
-    if (!commitMessage) {
-      ctx.ui.notify("/yeet: commit message cannot be empty", "warning");
-      return;
-    }
+  if (hasChanges && !commitMessage) {
+    ctx.ui.notify("/yeet: commit message cannot be empty", "warning");
+    return;
   }
 
   let remoteName: string | undefined;
