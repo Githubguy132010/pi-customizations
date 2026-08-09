@@ -5,7 +5,7 @@ import { runYeetWorkflow } from "../personal/commands/yeet";
 
 export default function (pi: ExtensionAPI) {
   pi.registerCommand("land", {
-    description: "Merge or close a GitHub PR and optionally clean up its branches",
+    description: "Merge or close one or more GitHub PRs and optionally clean up their branches",
     handler: (args: string, ctx: ExtensionContext) => runLandWorkflow(args, pi, ctx),
   });
 

@@ -26,5 +26,5 @@ pi install .
 
 - Enforces a bash-only tool policy
 - Adds `/yeet` for GPT-5.6 Luna commit-message, feature-branch, and PR-description generation with interactive commit/push/PR automation
-- Adds `/land [PR-number-or-URL]` to merge or close GitHub PRs and optionally delete their local and remote branches (`--dry-run` previews the selected plan)
+- Adds `/land [PR-number-or-URL]` to select one or more open GitHub PRs, merge or close them, and optionally delete their local and remote branches (`--dry-run` previews each selected plan)
 - Persists session working directory so it is restored on `/resume` and `/reload`
