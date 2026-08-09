@@ -1,18 +1,18 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-import { keepOnlyBashToolset } from "../personal/events/toolPolicy";
+import { keepOnlyPersonalToolset, PERSONAL_TOOLSET } from "../personal/events/toolPolicy";
 
 export default function (pi: ExtensionAPI) {
   pi.on("session_start", () => {
-    keepOnlyBashToolset(pi);
+    keepOnlyPersonalToolset(pi);
   });
 
   pi.on("before_agent_start", () => {
-    keepOnlyBashToolset(pi);
+    keepOnlyPersonalToolset(pi);
   });
 
   pi.on("tool_call", (event: { toolName: string }) => {
-    if (event.toolName === "bash") {
+    if ((PERSONAL_TOOLSET as readonly string[]).includes(event.toolName)) {
       return;
     }
 
