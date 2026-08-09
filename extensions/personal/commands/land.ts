@@ -33,7 +33,7 @@ interface PullRequest {
   url: string;
   mergeable?: string;
   mergeStateStatus?: string;
-  statusCheckRollup?: Array<{ status?: string; conclusion?: string }>;
+  statusCheckRollup?: Array<{ status?: string; conclusion?: string; state?: string }>;
 }
 
 type LandAction = "merge" | "auto" | "close" | "cleanup";
@@ -47,6 +47,16 @@ function parseJson<T>(value: string): T | undefined {
   }
 }
 
+function hasPendingChecks(pr: PullRequest): boolean {
+  return (pr.statusCheckRollup ?? []).some((check) => {
+    const status = check.status?.toUpperCase();
+    const state = check.state?.toUpperCase();
+    return ["EXPECTED", "PENDING", "QUEUED", "IN_PROGRESS", "REQUESTED", "WAITING"].includes(
+      status ?? state ?? "",
+    );
+  });
+}
+
 function checkSummary(pr: PullRequest): string {
   const checks = pr.statusCheckRollup ?? [];
   if (checks.length === 0) return "checks unavailable";
@@ -55,11 +65,11 @@ function checkSummary(pr: PullRequest): string {
   let failing = 0;
   let pending = 0;
   for (const check of checks) {
-    const conclusion = check.conclusion?.toUpperCase();
+    const result = (check.conclusion ?? check.state)?.toUpperCase();
     const status = check.status?.toUpperCase();
-    if (["SUCCESS", "NEUTRAL", "SKIPPED"].includes(conclusion ?? "")) passing += 1;
-    else if (["FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"].includes(conclusion ?? "")) failing += 1;
-    else if (status !== "COMPLETED" || !conclusion) pending += 1;
+    if (["SUCCESS", "NEUTRAL", "SKIPPED"].includes(result ?? "")) passing += 1;
+    else if (["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"].includes(result ?? "")) failing += 1;
+    else if (["EXPECTED", "PENDING", "QUEUED", "IN_PROGRESS", "REQUESTED", "WAITING"].includes(status ?? result ?? "")) pending += 1;
   }
 
   return `${passing} passing, ${failing} failing, ${pending} pending`;
@@ -228,11 +238,14 @@ async function cleanupLocalBranch(
 
 function actionOptions(pr: PullRequest): Array<{ label: string; action: LandAction }> {
   if (pr.state === "OPEN") {
-    return [
+    const actions: Array<{ label: string; action: LandAction }> = [
       { label: "Merge PR now", action: "merge" },
-      { label: "Enable auto-merge", action: "auto" },
-      { label: "Close PR without merging", action: "close" },
     ];
+    if (hasPendingChecks(pr)) {
+      actions.push({ label: "Enable auto-merge after checks pass", action: "auto" });
+    }
+    actions.push({ label: "Close PR without merging", action: "close" });
+    return actions;
   }
   return [{ label: `Clean up branches for ${pr.state.toLowerCase()} PR`, action: "cleanup" }];
 }
