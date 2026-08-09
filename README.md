@@ -19,11 +19,16 @@ Then run `pi config` to enable or disable each customization independently. Pres
 | --- | --- |
 | `extensions/bash-only/index.ts` | Enforces a bash-only tool policy. |
 | `extensions/session-workdir/index.ts` | Persists and restores each session's working directory. |
+| `extensions/slash-command-visibility/index.ts` | Hides selected built-in commands from slash autocomplete. |
 | `extensions/yeet/index.ts` | Adds `/yeet` for AI-assisted commits, pushes, and PR creation. |
 | `extensions/land/index.ts` | Adds `/land` for merging or closing PRs and cleaning up branches. |
 
 `/yeet` only offers its “create PR + land” workflow when the land extension is enabled.
 Disabling land therefore removes both `/land` and its integration with `/yeet`.
+
+The slash-command visibility extension hides `/name`, `/tree`, `/fork`, `/clone`,
+`/compact`, `/trust`, `/export`, `/import`, `/share`, `/hotkeys`, `/changelog`, and
+`/llama` from autocomplete. The commands remain executable when entered manually.
 
 Shared implementation modules live in `extensions/shared/`; they are not extension
 entrypoints and do not appear as separate toggles.
