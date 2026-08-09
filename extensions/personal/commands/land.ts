@@ -280,21 +280,12 @@ async function cleanupLocalBranch(
   }
 
   ctx.ui.setStatus(LAND_STATUS_PREFIX, `Deleting ${pr.headRefName}...`);
-  const remove = await runCommand(pi, "git", ["branch", "-d", pr.headRefName], repoRoot);
-  if (remove.code === 0) return true;
-
-  const force = await ctx.ui.confirm(
-    "Local branch is not fully merged",
-    `git branch -d refused to delete ${pr.headRefName}. Force-delete it?\n\n${summarizeError(remove)}`,
-  );
-  if (!force) {
-    ctx.ui.notify(`/land: kept local branch ${pr.headRefName}`, "warning");
-    return false;
-  }
-
-  const forced = await runCommand(pi, "git", ["branch", "-D", pr.headRefName], repoRoot);
-  if (forced.code !== 0) {
-    ctx.ui.notify(`/land: failed to delete local branch: ${summarizeError(forced)}`, "error");
+  // Squash and rebase merges do not make the feature tip an ancestor of the
+  // base branch, so Git's safe delete (-d) rejects branches that were already
+  // landed. The user explicitly approved deleting this branch in the plan.
+  const remove = await runCommand(pi, "git", ["branch", "-D", pr.headRefName], repoRoot);
+  if (remove.code !== 0) {
+    ctx.ui.notify(`/land: failed to delete local branch: ${summarizeError(remove)}`, "error");
     return false;
   }
   return true;
