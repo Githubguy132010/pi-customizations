@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { clearTpsStatus } from "./tps";
+import { LAND_STATUS_PREFIX } from "../commands/land";
 import { YEET_STATUS_PREFIX } from "../commands/yeet";
 import { syncSessionWorkdirFromHistory, persistSessionWorkdir } from "../utils/sessionWorkdir";
 
@@ -17,4 +18,5 @@ export function handleSessionShutdown(
   persistSessionWorkdir(pi, event.reason);
   clearTpsStatus(ctx);
   ctx.ui.setStatus(YEET_STATUS_PREFIX, undefined);
+  ctx.ui.setStatus(LAND_STATUS_PREFIX, undefined);
 }
