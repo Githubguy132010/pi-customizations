@@ -1,13 +1,3 @@
-export interface TurnMetrics {
-  active: boolean;
-  startAt: number;
-  generationStartAt: number;
-  lastStatusAt: number;
-  outputChars: number;
-  outputTokens: number;
-  reportedOutputTokens: number;
-}
-
 export interface ExecResultLike {
   code: number;
   stdout: string;

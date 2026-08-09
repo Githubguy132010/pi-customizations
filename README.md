@@ -14,7 +14,6 @@ pi install .
 
 - `extensions/`
   - `personal-policy/` — enforces tool-policy behavior
-  - `personal-tps/` — live token-per-second / turn metrics
   - `personal-session/` — session lifecycle hooks and workdir persistence
   - `personal-commands/` — `/yeet` and `/land` commands and workflows
   - `personal/` — shared modules and utilities:
@@ -26,7 +25,6 @@ pi install .
 ## Included behavior
 
 - Enforces a bash-only tool policy
-- Shows live token-per-second in the footer
 - Adds `/yeet` for GPT-5.6 Luna commit-message, feature-branch, and PR-description generation with interactive commit/push/PR automation
 - Adds `/land [PR-number-or-URL]` to merge or close GitHub PRs and optionally delete their local and remote branches (`--dry-run` previews the selected plan)
 - Persists session working directory so it is restored on `/resume` and `/reload`
