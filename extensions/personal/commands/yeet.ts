@@ -2,6 +2,7 @@ import { join, relative } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { runCommand, summarizeError } from "../utils/exec";
+import { runLandWorkflow } from "./land";
 import {
   collectGitRemotes,
   formatPrBody,
@@ -286,6 +287,7 @@ export async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: Exten
     "Commit only",
     "Commit + push",
     "Commit + push + create PR",
+    "Commit + push + create PR + land",
   ]);
 
   if (!workflow) {
@@ -294,7 +296,8 @@ export async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: Exten
   }
 
   const doPush = workflow !== "Commit only";
-  const doPr = workflow === "Commit + push + create PR";
+  const doPr = workflow === "Commit + push + create PR" || workflow === "Commit + push + create PR + land";
+  const doLand = workflow === "Commit + push + create PR + land";
 
   let commitMessage = args.trim();
   if (hasChanges && !commitMessage) {
@@ -367,6 +370,7 @@ export async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: Exten
 
   ctx.ui.setStatus(YEET_STATUS_PREFIX, "Preparing yeet...");
   let pushBranch: string | undefined;
+  let createdPrUrl: string | undefined;
 
   try {
     if (doPr) {
@@ -518,7 +522,8 @@ export async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: Exten
         return;
       }
 
-      ctx.ui.notify(`/yeet: PR created\n${pr.stdout.trim() || "(no URL returned)"}`, "info");
+      createdPrUrl = pr.stdout.trim() || undefined;
+      ctx.ui.notify(`/yeet: PR created\n${createdPrUrl || "(no URL returned)"}`, "info");
     }
 
     const summary = [
@@ -532,6 +537,12 @@ export async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: Exten
       summary.push("PR requested");
     }
     ctx.ui.notify(summary.join(" | "), "info");
+
+    if (doLand && createdPrUrl) {
+      await runLandWorkflow(createdPrUrl, pi, ctx);
+    } else if (doPr) {
+      ctx.ui.notify("/yeet: run /land from this branch when the PR is ready", "info");
+    }
   } finally {
     ctx.ui.setStatus(YEET_STATUS_PREFIX, undefined);
   }
