@@ -6,6 +6,14 @@
     "pi-package"
   ],
   "description": "Personal Pi extension customizations.",
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.1",
+    "@types/node": "^20.14.0",
+    "typescript": "^5.7.2"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
   "pi": {
     "extensions": [
       "extensions"
