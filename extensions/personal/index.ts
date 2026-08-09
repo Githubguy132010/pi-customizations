@@ -93,9 +93,8 @@ function maybeSetTps(ctx: ExtensionContext, force = false) {
 }
 
 export default function (pi: ExtensionAPI) {
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_start", (_event, _ctx) => {
     keepOnlyBashToolset(pi);
-    ctx.ui.setStatus("tool-policy", "🐚 bash-only tools");
   });
 
   pi.on("before_agent_start", (_event, _ctx) => {
@@ -153,7 +152,6 @@ export default function (pi: ExtensionAPI) {
 
     return {
       block: true,
-      reason: `Tool policy: '${event.toolName}' is disabled; only bash is allowed.`,
       terminate: true,
     };
   });
@@ -167,7 +165,6 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_shutdown", async (_event, ctx) => {
     stopTurn();
-    ctx.ui.setStatus("tool-policy", undefined);
     ctx.ui.setStatus("live-tps", undefined);
   });
 }
