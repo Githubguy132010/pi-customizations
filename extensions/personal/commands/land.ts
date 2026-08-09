@@ -293,11 +293,18 @@ export async function runLandWorkflow(
     }
 
     let method: MergeMethod | undefined;
-    if (action === "merge" || action === "auto") {
-      if (pr.isDraft) {
-        ctx.ui.notify("/land: draft PRs must be marked ready before merging", "warning");
+    const markReady = pr.isDraft && (action === "merge" || action === "auto");
+    if (markReady) {
+      const ready = await ctx.ui.confirm(
+        "Draft pull request",
+        `PR #${pr.number} is a draft. Mark it ready for review before merging?`,
+      );
+      if (!ready) {
+        ctx.ui.notify("/land canceled; draft PR was not changed", "warning");
         return;
       }
+    }
+    if (action === "merge" || action === "auto") {
       const methodLabel = await ctx.ui.select("Merge method", ["Squash", "Merge commit", "Rebase"]);
       method = methodLabel === "Squash" ? "squash" : methodLabel === "Merge commit" ? "merge" : methodLabel === "Rebase" ? "rebase" : undefined;
       if (!method) return;
@@ -315,6 +322,7 @@ export async function runLandWorkflow(
     const plan = [
       `PR: #${pr.number} ${pr.title}`,
       `Action: ${action === "cleanup" ? "cleanup only" : action}${method ? ` (${method})` : ""}`,
+      `Mark draft ready: ${markReady ? "yes" : "no"}`,
       `Delete remote branch: ${deleteRemote ? "yes" : "no"}`,
       `Delete local branch: ${deleteLocal ? "yes" : "no"}`,
     ].join("\n");
@@ -328,6 +336,17 @@ export async function runLandWorkflow(
     }
 
     let finalState = pr.state;
+    if (markReady) {
+      ctx.ui.setStatus(LAND_STATUS_PREFIX, "Marking pull request ready...");
+      const ready = await runCommand(pi, "gh", ["pr", "ready", pr.url], repoRoot);
+      if (ready.code !== 0) {
+        ctx.ui.notify(`/land: failed to mark PR ready: ${summarizeError(ready)}`, "error");
+        return;
+      }
+      pr = { ...pr, isDraft: false };
+      ctx.ui.notify(`/land: PR #${pr.number} marked ready for review`, "info");
+    }
+
     if (action !== "cleanup") {
       ctx.ui.setStatus(LAND_STATUS_PREFIX, action === "close" ? "Closing pull request..." : "Merging pull request...");
       const commandArgs = action === "close"
