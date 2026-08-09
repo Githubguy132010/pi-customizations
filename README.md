@@ -27,5 +27,5 @@ pi install .
 
 - Enforces a bash-only tool policy
 - Shows live token-per-second in the footer
-- Adds `/yeet` for GPT-5.6 Luna commit-message generation and interactive commit/push/PR automation
+- Adds `/yeet` for GPT-5.6 Luna commit-message, feature-branch, and PR-description generation with interactive commit/push/PR automation
 - Persists session working directory so it is restored on `/resume` and `/reload`

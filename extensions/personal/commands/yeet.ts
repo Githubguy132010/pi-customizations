@@ -16,51 +16,33 @@ import {
 
 export const YEET_STATUS_PREFIX = "yeet";
 
-const COMMIT_MESSAGE_MODEL = {
+const YEET_MODEL = {
   provider: "openai-codex",
   id: "gpt-5.6-luna",
 } as const;
 const MAX_DIFF_CHARS = 80_000;
 
-async function generateCommitMessage(
-  pi: ExtensionAPI,
+async function completeWithLuna(
   ctx: ExtensionContext,
-  repoRoot: string,
-  status: string,
+  systemPrompt: string,
+  prompt: string,
+  maxTokens: number,
 ): Promise<string> {
-  const model = ctx.modelRegistry.find(COMMIT_MESSAGE_MODEL.provider, COMMIT_MESSAGE_MODEL.id);
+  const model = ctx.modelRegistry.find(YEET_MODEL.provider, YEET_MODEL.id);
   if (!model) {
-    throw new Error(`${COMMIT_MESSAGE_MODEL.provider}/${COMMIT_MESSAGE_MODEL.id} is not available`);
+    throw new Error(`${YEET_MODEL.provider}/${YEET_MODEL.id} is not available`);
   }
   if (!ctx.modelRegistry.hasConfiguredAuth(model)) {
-    throw new Error(`no authentication configured for ${COMMIT_MESSAGE_MODEL.provider}/${COMMIT_MESSAGE_MODEL.id}`);
+    throw new Error(`no authentication configured for ${YEET_MODEL.provider}/${YEET_MODEL.id}`);
   }
-
-  const diffResult = await runCommand(
-    pi,
-    "git",
-    ["diff", "--no-ext-diff", "--no-color", "HEAD"],
-    repoRoot,
-  );
-  const rawDiff = diffResult.code === 0 ? diffResult.stdout : "(Diff unavailable; infer from git status.)";
-  const diff = rawDiff.length > MAX_DIFF_CHARS
-    ? `${rawDiff.slice(0, MAX_DIFF_CHARS)}\n\n[diff truncated]`
-    : rawDiff;
 
   const response = await ctx.modelRegistry.complete(
     model,
     {
-      systemPrompt: [
-        "Generate one concise git commit subject for the supplied changes.",
-        "Use conventional commits when appropriate (for example feat:, fix:, refactor:, docs:, chore:).",
-        "Use imperative mood, keep it at most 72 characters, and output only the subject with no quotes or markdown.",
-      ].join(" "),
+      systemPrompt,
       messages: [{
         role: "user",
-        content: [{
-          type: "text",
-          text: `Git status:\n${status.trim()}\n\nDiff:\n${diff}`,
-        }],
+        content: [{ type: "text", text: prompt }],
         timestamp: Date.now(),
       }],
     },
@@ -68,7 +50,7 @@ async function generateCommitMessage(
       reasoningEffort: "minimal",
       textVerbosity: "low",
       cacheRetention: "none",
-      maxTokens: 256,
+      maxTokens,
     },
   );
 
@@ -76,10 +58,195 @@ async function generateCommitMessage(
     throw new Error(response.errorMessage || `model stopped with ${response.stopReason}`);
   }
 
-  const generated = response.content
+  const text = response.content
     .filter((content): content is { type: "text"; text: string } => content.type === "text")
     .map((content) => content.text)
     .join("\n")
+    .trim();
+
+  if (!text) {
+    throw new Error("model returned an empty response");
+  }
+
+  return text;
+}
+
+async function readDiff(pi: ExtensionAPI, repoRoot: string, ref = "HEAD"): Promise<string> {
+  const result = await runCommand(
+    pi,
+    "git",
+    ["diff", "--no-ext-diff", "--no-color", ref],
+    repoRoot,
+  );
+  const rawDiff = result.code === 0 ? result.stdout : "(Diff unavailable; infer from the other context.)";
+  return rawDiff.length > MAX_DIFF_CHARS
+    ? `${rawDiff.slice(0, MAX_DIFF_CHARS)}\n\n[diff truncated]`
+    : rawDiff;
+}
+
+function normalizeFeatureBranch(value: string): string {
+  const unwrapped = value
+    .trim()
+    .split("\n")
+    .find((line) => line.trim().length > 0)
+    ?.trim()
+    .replace(/^`+|`+$/g, "")
+    .replace(/^["']|["']$/g, "")
+    .toLowerCase() ?? "";
+  const withoutPrefix = unwrapped.replace(/^feature[/-]+/, "");
+  const slug = withoutPrefix
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 56)
+    .replace(/-+$/g, "");
+
+  if (!slug) {
+    throw new Error("model returned an invalid branch name");
+  }
+  return `feature/${slug}`;
+}
+
+async function generateFeatureBranch(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  repoRoot: string,
+  status: string,
+  commitMessage: string,
+): Promise<string> {
+  const diff = await readDiff(pi, repoRoot);
+  const generated = await completeWithLuna(
+    ctx,
+    [
+      "Generate a concise git feature branch name for the supplied changes.",
+      "Use the form feature/kebab-case, keep it descriptive and under 64 characters,",
+      "and output only the branch name with no quotes or markdown.",
+    ].join(" "),
+    `Commit subject: ${commitMessage}\n\nGit status:\n${status.trim()}\n\nDiff:\n${diff}`,
+    128,
+  );
+  return normalizeFeatureBranch(generated);
+}
+
+async function findAvailableFeatureBranch(
+  pi: ExtensionAPI,
+  repoRoot: string,
+  remoteName: string,
+  requested: string,
+): Promise<string> {
+  for (let attempt = 1; attempt <= 100; attempt += 1) {
+    const candidate = attempt === 1 ? requested : `${requested}-${attempt}`;
+    const local = await runCommand(
+      pi,
+      "git",
+      ["show-ref", "--verify", "--quiet", `refs/heads/${candidate}`],
+      repoRoot,
+    );
+    if (local.code === 0) {
+      continue;
+    }
+
+    const remote = await runCommand(
+      pi,
+      "git",
+      ["ls-remote", "--heads", remoteName, `refs/heads/${candidate}`],
+      repoRoot,
+    );
+    if (remote.code !== 0) {
+      throw new Error(`failed to check ${remoteName} for existing branches: ${summarizeError(remote)}`);
+    }
+    if (!remote.stdout.trim()) {
+      return candidate;
+    }
+  }
+
+  throw new Error(`could not find an available branch name based on ${requested}`);
+}
+
+async function resolvePrBaseRef(
+  pi: ExtensionAPI,
+  repoRoot: string,
+  remoteName: string,
+): Promise<string | undefined> {
+  const symbolic = await runCommand(
+    pi,
+    "git",
+    ["symbolic-ref", "--quiet", "--short", `refs/remotes/${remoteName}/HEAD`],
+    repoRoot,
+  );
+  if (symbolic.code === 0 && symbolic.stdout.trim()) {
+    return symbolic.stdout.trim();
+  }
+
+  const defaultBranch = await runCommand(
+    pi,
+    "gh",
+    ["repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"],
+    repoRoot,
+  );
+  return defaultBranch.code === 0 && defaultBranch.stdout.trim()
+    ? `${remoteName}/${defaultBranch.stdout.trim()}`
+    : undefined;
+}
+
+async function generatePrBody(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  repoRoot: string,
+  remoteName: string,
+  title: string,
+  templateBody?: string,
+): Promise<string> {
+  const baseRef = await resolvePrBaseRef(pi, repoRoot, remoteName);
+  let diff = baseRef ? await readDiff(pi, repoRoot, `${baseRef}...HEAD`) : "";
+  if (!diff.trim()) {
+    const latest = await runCommand(
+      pi,
+      "git",
+      ["show", "--no-ext-diff", "--no-color", "--format=fuller", "--stat", "--patch", "HEAD"],
+      repoRoot,
+    );
+    diff = latest.code === 0 ? latest.stdout : "(Diff unavailable.)";
+    if (diff.length > MAX_DIFF_CHARS) {
+      diff = `${diff.slice(0, MAX_DIFF_CHARS)}\n\n[diff truncated]`;
+    }
+  }
+
+  const templateInstruction = templateBody?.trim()
+    ? `\n\nUse and complete this repository PR template. Preserve relevant checklists and headings; remove placeholder instructions that do not belong in the final description:\n\n${templateBody.trim()}`
+    : "";
+
+  return completeWithLuna(
+    ctx,
+    [
+      "Write a clear pull request description in Markdown for the supplied changes.",
+      "Explain what changed and why, call out important implementation details, and include testing status.",
+      "Do not invent tests or claims not supported by the context.",
+      "Output only the final PR body with no surrounding code fence.",
+    ].join(" "),
+    `PR title: ${title}\nBase: ${baseRef ?? "repository default branch"}\n\nChanges:\n${diff}${templateInstruction}`,
+    1_500,
+  );
+}
+
+async function generateCommitMessage(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  repoRoot: string,
+  status: string,
+): Promise<string> {
+  const diff = await readDiff(pi, repoRoot);
+  const generatedText = await completeWithLuna(
+    ctx,
+    [
+      "Generate one concise git commit subject for the supplied changes.",
+      "Use conventional commits when appropriate (for example feat:, fix:, refactor:, docs:, chore:).",
+      "Use imperative mood, keep it at most 72 characters, and output only the subject with no quotes or markdown.",
+    ].join(" "),
+    `Git status:\n${status.trim()}\n\nDiff:\n${diff}`,
+    256,
+  );
+
+  const generated = generatedText
     .trim()
     .split("\n")
     .find((line) => line.trim().length > 0)
@@ -202,6 +369,52 @@ export async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: Exten
   let pushBranch: string | undefined;
 
   try {
+    if (doPr) {
+      ctx.ui.setStatus(YEET_STATUS_PREFIX, "Generating feature branch...");
+      let featureBranch: string;
+      try {
+        featureBranch = await generateFeatureBranch(pi, ctx, repoRoot, status.stdout, commitMessage);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        ctx.ui.notify(`/yeet: branch generation failed (${detail}); enter one manually`, "warning");
+        const branch = await ctx.ui.input("Feature branch", "feature/");
+        if (!branch) {
+          ctx.ui.notify("/yeet canceled", "warning");
+          return;
+        }
+        featureBranch = branch.trim();
+      }
+
+      const requestedBranch = featureBranch;
+      try {
+        featureBranch = await findAvailableFeatureBranch(pi, repoRoot, remoteName!, requestedBranch);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        ctx.ui.notify(`/yeet: unable to choose a feature branch: ${detail}`, "error");
+        return;
+      }
+      ctx.ui.notify(
+        featureBranch === requestedBranch
+          ? `/yeet: generated feature branch: ${featureBranch}`
+          : `/yeet: feature branch ${requestedBranch} exists; using ${featureBranch}`,
+        "info",
+      );
+
+      const validBranch = await runCommand(pi, "git", ["check-ref-format", "--branch", featureBranch], repoRoot);
+      if (validBranch.code !== 0) {
+        ctx.ui.notify(`/yeet: invalid feature branch name: ${featureBranch}`, "error");
+        return;
+      }
+
+      ctx.ui.setStatus(YEET_STATUS_PREFIX, "Creating feature branch...");
+      const createBranch = await runCommand(pi, "git", ["checkout", "-b", featureBranch], repoRoot);
+      if (createBranch.code !== 0) {
+        ctx.ui.notify(`/yeet: failed to create feature branch: ${summarizeError(createBranch)}`, "error");
+        return;
+      }
+      pushBranch = featureBranch;
+    }
+
     if (hasChanges) {
       const addAll = await runCommand(pi, "git", ["add", "-A"], repoRoot);
       if (addAll.code !== 0) {
@@ -223,7 +436,7 @@ export async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: Exten
         ctx.ui.notify("/yeet: unable to determine current branch", "error");
         return;
       }
-      pushBranch = head.stdout.trim();
+      pushBranch = pushBranch ?? head.stdout.trim();
 
       const push = await runCommand(pi, "git", ["push", "-u", remoteName, pushBranch], repoRoot);
       if (push.code !== 0) {
@@ -277,13 +490,23 @@ export async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: Exten
         return;
       }
 
+      ctx.ui.setStatus(YEET_STATUS_PREFIX, "Writing PR description...");
+      let prBody: string;
+      try {
+        prBody = await generatePrBody(pi, ctx, repoRoot, remoteName!, commitMessage, templateBody);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        ctx.ui.notify(`/yeet: PR description generation failed (${detail}); using commit summary`, "warning");
+        prBody = formatPrBody(commitMessage, templateBody);
+      }
+
       const prArgs = [
         "pr",
         "create",
         "--title",
         commitMessage,
         "--body",
-        formatPrBody(commitMessage, templateBody),
+        prBody,
       ];
       if (prType === "Draft PR") {
         prArgs.push("--draft");
