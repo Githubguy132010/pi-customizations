@@ -2,12 +2,13 @@
   "name": "pi-customizations",
   "version": "0.1.0",
   "private": true,
-  "keywords": ["pi-package"],
-  "description": "Personal Pi customizations: extensions, prompts, skills, and themes.",
+  "keywords": [
+    "pi-package"
+  ],
+  "description": "Personal Pi extension customizations.",
   "pi": {
-    "extensions": ["extensions"],
-    "prompts": ["prompts"],
-    "skills": ["skills"],
-    "themes": ["themes"]
+    "extensions": [
+      "extensions"
+    ]
   }
 }
