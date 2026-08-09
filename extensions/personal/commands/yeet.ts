@@ -502,6 +502,8 @@ export async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: Exten
         const detail = error instanceof Error ? error.message : String(error);
         ctx.ui.notify(`/yeet: PR description generation failed (${detail}); using commit summary`, "warning");
         prBody = formatPrBody(commitMessage, templateBody);
+      } finally {
+        ctx.ui.setStatus(YEET_STATUS_PREFIX, undefined);
       }
 
       const prArgs = [
@@ -516,7 +518,9 @@ export async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: Exten
         prArgs.push("--draft");
       }
 
+      ctx.ui.setStatus(YEET_STATUS_PREFIX, "Creating pull request...");
       const pr = await runCommand(pi, "gh", prArgs, repoRoot);
+      ctx.ui.setStatus(YEET_STATUS_PREFIX, undefined);
       if (pr.code !== 0) {
         ctx.ui.notify(`/yeet: failed to create PR: ${summarizeError(pr)}`, "error");
         return;
