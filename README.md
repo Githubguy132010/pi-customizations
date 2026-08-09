@@ -1,6 +1,6 @@
 # pi-customizations
 
-Personal Pi customization package focused on extensions.
+Personal Pi extension customizations.
 
 ## Install
 
@@ -13,4 +13,7 @@ pi install .
 ## Contents
 
 - `extensions/` — custom behaviors and commands
-  - Includes a session extension that enforces a bash-only tool policy and shows live token-per-second in the footer.
+  - Includes a session extension that:
+    - enforces a bash-only tool policy,
+    - shows live token-per-second in the footer,
+    - adds `/yeet` for interactive commit/push/PR workflow automation.
