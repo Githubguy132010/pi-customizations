@@ -2,21 +2,15 @@ import type { ChildProcess } from "node:child_process";
 
 export type JobState = "queued" | "starting" | "running" | "needs_input" | "paused" | "completed" | "failed" | "cancelled" | "timed_out";
 export type TerminalState = Extract<JobState, "completed" | "failed" | "cancelled" | "timed_out">;
-export type FallbackPolicy = "ask" | "allow" | "deny";
-export type SandboxStrength = "native" | "container" | "vm" | "none";
-
 export interface Limits {
   concurrency: number;
-  processCount: number;
-  cpuSeconds: number;
-  memoryMb: number;
   diskMb: number;
   runtimeMs: number;
   outputBytes: number;
 }
-export const DEFAULT_LIMITS: Limits = { concurrency: 4, processCount: 64, cpuSeconds: 600, memoryMb: 1024, diskMb: 2048, runtimeMs: 15 * 60_000, outputBytes: 512 * 1024 };
+export const DEFAULT_LIMITS: Limits = { concurrency: 4, diskMb: 2048, runtimeMs: 15 * 60_000, outputBytes: 512 * 1024 };
 
-export interface JobSpec { task: string; model?: string; fallbackOverride?: FallbackPolicy; }
+export interface JobSpec { task: string; model?: string; }
 export interface JobEvent { seq: number; at: string; type: string; data?: unknown; }
 export interface JobResult { jobId: string; groupId: string; state: TerminalState; terminalReason: string; output: string; stderr: string; sandbox: string; sandboxed: boolean; startedAt?: string; finishedAt: string; truncated: boolean; cleanupPending: boolean; }
 export interface Session { root: string; worktree: string; repoRoot: string; }

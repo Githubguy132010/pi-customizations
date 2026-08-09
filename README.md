@@ -44,33 +44,21 @@ entrypoints and do not appear as separate toggles.
 
 ### Ephemeral subagents
 
-`extensions/ephemeral-subagents/index.ts` registers `subagent_jobs`, a read-only
+`extensions/ephemeral-subagents/index.ts` registers `subagent_jobs`, a repository
 investigation job service. A launch may contain one task or up to 16 parallel tasks.
 Foreground launches wait for the group; background launches return job and group IDs.
 Use the `status`, `collect`, `wait`, `message`, `answer`, `pause`, `resume`, and `cancel`
 actions to control background jobs.
 
 Every job receives a detached disposable Git worktree under a mode-0700 temporary
-session containing only `repos/`. Bubblewrap mounts that worktree read-only at the
-main repository's original absolute path, supplies a private `/tmp`, permits networking,
-and exposes only required OS/runtime paths. The manager keeps events, protocol state,
-and bounded output in its own memory. It kills the process group and removes both the
-worktree and session on every terminal path; failed cleanup is retried.
+session containing only `repos/`. The subagent runs in that worktree as a normal host
+process. On completion, failure, timeout, or cancellation, the process group is stopped
+and the worktree and session are removed. Failed cleanup is retried.
 
-Sandbox selection is ordered: Bubblewrap, then a per-job Podman/Docker container. To
-use containers, set `PI_SUBAGENT_CONTAINER_IMAGE` to an image containing Node and `pi`.
-There is intentionally no automatic unsandboxed fallback. The persisted platform policy
-is `ask` by default and can be changed with:
-
-```json
-{"action":"policy","savedPolicy":"deny"}
-```
-
-Policies are `ask`, `allow`, or `deny`, saved in
-`~/.pi/agent/ephemeral-subagents.json`. `fallbackOverride` changes one launch only. An
-unsandboxed result is explicitly labelled either `unsandboxed by saved preference`,
-`unsandboxed by per-run override`, or `unsandboxed by explicit per-run confirmation`.
-Headless `ask` is denied because no confirmation UI is available.
+**Security:** jobs are not sandboxed. They are instructed to investigate read-only and
+changes in their disposable worktree are discarded, but commands still have the same
+host filesystem and network access as Pi. Do not delegate untrusted prompts or code.
+Results explicitly report `none (host process)` and `sandboxed: false`.
 
 Example tool calls:
 
@@ -81,30 +69,10 @@ Example tool calls:
 {"action":"wait","groupId":"..."}
 ```
 
-Limits are configurable per manager for concurrency, process count, CPU, memory, disk,
-runtime, and captured output. Runtime and output limits are always enforced. Container
-limits use runtime cgroups. Bubblewrap provides PID/mount/user namespaces and a
-read-only repository, but Bubblewrap itself does not implement CPU, memory, process, or
-scratch-disk quotas; capability notices report this host limitation rather than claiming
-those quotas are active.
+Concurrency, worktree disk, runtime, and captured-output limits are configurable. The
+private inherited control pipe retains versioned, 64-KiB, HMAC-authenticated frames.
+Cancellation wins over late answers, control loss and crashes are terminal failures, and
+pausing one process group does not stop parallel jobs.
 
-The control channel is a private inherited pipe with versioned, 64-KiB, HMAC-authenticated
-frames. Sequence checks reject malformed, duplicate, late, and out-of-order frames. Pi's
-RPC protocol supplies progress, messages/follow-ups, UI questions/answers, and structured
-completion events. Cancellation wins over late answers; control loss/crashes are terminal
-failures; terminal jobs reject later commands. Pausing one process group does not stop
-other jobs.
-
-Platform notes:
-
-- Bubblewrap requires Linux user namespaces. Startup failure is a job failure and never
-  triggers an unsafe fallback.
-- Internet access is enabled. The manager brokers only the selected model credential,
-  provider API variables, and basic proxy variables. SSH, cloud, Git, and Pi
-  credential/config directories are not mounted. Providers requiring extra custom
-  headers or credential files need a container-specific credential broker.
-- Submodule working trees are not initialized automatically, because doing so could
-  mutate shared Git module storage or require host credentials. Already committed
-  gitlink entries remain visible; missing submodule content must be reported by the job.
-- The container image contract and managed-VM backend are extension points; no managed
-  VM backend is bundled. A shared VM must still run one container/sandbox per job.
+Submodules are not initialized automatically because doing so can mutate shared Git
+module storage. Already committed gitlink entries remain visible.

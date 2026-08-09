@@ -3,36 +3,27 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { resolveRepoRoot } from "../shared/utils/git.ts";
 import { JobManager } from "./manager.ts";
-import { FallbackPolicyStore } from "./policy.ts";
-import type { FallbackPolicy, JobSpec } from "./types.ts";
 
-const Action = StringEnum(["launch","status","collect","wait","message","answer","pause","resume","cancel","policy"] as const);
-const Policy = StringEnum(["ask","allow","deny"] as const);
+const Action = StringEnum(["launch","status","collect","wait","message","answer","pause","resume","cancel"] as const);
 const Params = Type.Object({
   action: Action,
   task: Type.Optional(Type.String()), tasks: Type.Optional(Type.Array(Type.String(), { maxItems: 16 })), model: Type.Optional(Type.String()),
   background: Type.Optional(Type.Boolean({ default: false })), jobId: Type.Optional(Type.String()), groupId: Type.Optional(Type.String()),
   message: Type.Optional(Type.String()), requestId: Type.Optional(Type.String()), answer: Type.Optional(Type.Union([Type.String(),Type.Boolean()])), followUp: Type.Optional(Type.Boolean()),
-  fallbackOverride: Type.Optional(Policy), savedPolicy: Type.Optional(Policy),
-  concurrency: Type.Optional(Type.Integer({minimum:1,maximum:16})), processCount: Type.Optional(Type.Integer({minimum:1,maximum:512})),
-  cpuSeconds: Type.Optional(Type.Integer({minimum:1})), memoryMb: Type.Optional(Type.Integer({minimum:128})), diskMb: Type.Optional(Type.Integer({minimum:16})), runtimeMs: Type.Optional(Type.Integer({minimum:1000})), outputBytes: Type.Optional(Type.Integer({minimum:1024})),
+  concurrency: Type.Optional(Type.Integer({minimum:1,maximum:16})), diskMb: Type.Optional(Type.Integer({minimum:16})), runtimeMs: Type.Optional(Type.Integer({minimum:1000})), outputBytes: Type.Optional(Type.Integer({minimum:1024})),
 });
 
 export default function(pi:ExtensionAPI){
-  let manager:JobManager|undefined; let context:ExtensionContext|undefined; const policyStore=new FallbackPolicyStore();
+  let manager:JobManager|undefined;
   async function getManager(params:any,ctx:ExtensionContext){
     if(manager)return manager; const repoRoot=await resolveRepoRoot(pi,ctx); if(!repoRoot)throw new Error(`Not inside a Git repository: ${ctx.cwd}`);
-    const auth=ctx.model?await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model):undefined; manager=new JobManager({repoRoot,cwd:ctx.cwd,defaultModel:ctx.model?.id,defaultProvider:ctx.model?.provider,apiKey:auth?.ok?auth.apiKey:undefined,limits:{concurrency:params.concurrency,processCount:params.processCount,cpuSeconds:params.cpuSeconds,memoryMb:params.memoryMb,diskMb:params.diskMb,runtimeMs:params.runtimeMs,outputBytes:params.outputBytes},allowUnsandboxed:async(spec:JobSpec,notices:string[])=>{
-      const policy:FallbackPolicy=spec.fallbackOverride??await policyStore.get(); if(policy==="deny")return false; if(policy==="allow")return spec.fallbackOverride?"per-run override":"saved preference";
-      if(!ctx.hasUI)return false; const ok=await ctx.ui.confirm("No secure subagent sandbox",`${notices.join("\n")}\n\nRunning would give the subagent normal host filesystem access. Run this job unsandboxed once?`); return ok?"explicit per-run confirmation":false;
-    }}); return manager;
+    const auth=ctx.model?await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model):undefined; manager=new JobManager({repoRoot,cwd:ctx.cwd,defaultModel:ctx.model?.id,defaultProvider:ctx.model?.provider,apiKey:auth?.ok?auth.apiKey:undefined,limits:{concurrency:params.concurrency,diskMb:params.diskMb,runtimeMs:params.runtimeMs,outputBytes:params.outputBytes}}); return manager;
   }
-  pi.registerTool({name:"subagent_jobs",label:"Ephemeral subagents",description:"Launch read-only repository investigation agents in independent ephemeral Git worktrees and secure sandboxes. Supports foreground/background groups plus status, collect, wait, messaging, answering, pause/resume, cancellation, and fallback policy. Never assumes unsandboxed consent.",parameters:Params,
-    async execute(_id,p,_signal,onUpdate,ctx){ context=ctx;
-      if(p.action==="policy"){if(p.savedPolicy)await policyStore.set(p.savedPolicy);const value=await policyStore.get();return {content:[{type:"text",text:`Saved ${process.platform} fallback policy: ${value}`}],details:{policy:value,platform:process.platform}};}
+  pi.registerTool({name:"subagent_jobs",label:"Ephemeral subagents",description:"Launch repository investigation agents in independent disposable Git worktrees. Jobs are unsandboxed host processes. Supports foreground/background groups plus status, collect, wait, messaging, answering, pause/resume, and cancellation.",parameters:Params,
+    async execute(_id,p,_signal,onUpdate,ctx){
       const m=await getManager(p,ctx);
       if(p.action==="launch"){
-        const tasks=p.tasks?.length?p.tasks:p.task?[p.task]:[];if(!tasks.length)throw new Error("launch requires task or tasks");const h=m.launch(tasks.map(task=>({task,model:p.model,fallbackOverride:p.fallbackOverride})));
+        const tasks=p.tasks?.length?p.tasks:p.task?[p.task]:[];if(!tasks.length)throw new Error("launch requires task or tasks");const h=m.launch(tasks.map(task=>({task,model:p.model})));
         if(p.background)return {content:[{type:"text",text:`Started group ${h.groupId}: ${h.jobIds.join(", ")}`}],details:h};
         const pending=m.waitGroup(h.groupId);const ticker=setInterval(()=>onUpdate?.({content:[{type:"text",text:h.jobIds.map(id=>`${id}: ${m.status(id).state}`).join("\n")}],details:h}),250);try{const results=await pending;return {content:[{type:"text",text:results.map(r=>`### ${r.jobId} (${r.state}, ${r.sandbox})\n${r.output||r.stderr||r.terminalReason}`).join("\n\n")}],details:{...h,results}};}finally{clearInterval(ticker);}
       }
@@ -45,5 +36,5 @@ export default function(pi:ExtensionAPI){
       else if(p.action==="pause")m.pause(p.jobId);else if(p.action==="resume")m.resume(p.jobId);else if(p.action==="cancel")m.cancel(p.jobId);
       const s=m.status(p.jobId);return {content:[{type:"text",text:`${p.jobId}: ${s.state}`}],details:s};
     }});
-  pi.on("session_shutdown",async()=>{await manager?.shutdown();manager=undefined;context=undefined;});
+  pi.on("session_shutdown",async()=>{await manager?.shutdown();manager=undefined;});
 }
