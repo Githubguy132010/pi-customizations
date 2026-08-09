@@ -13,10 +13,13 @@ pi install .
 ## Structure
 
 - `extensions/`
-  - `personal/`
-    - `index.ts` — extension entrypoint that wires hooks/commands
-    - `commands/` — command handlers (e.g. `yeet`)
-    - `events/` — session/turn event handlers and tool policy
+  - `personal-policy/` — enforces tool-policy behavior
+  - `personal-tps/` — live token-per-second / turn metrics
+  - `personal-session/` — session lifecycle hooks and workdir persistence
+  - `personal-commands/` — `/yeet` command and workflow
+  - `personal/` — shared modules and utilities:
+    - `commands/` — command handler logic (e.g. `yeet`)
+    - `events/` — shared event handlers
     - `utils/` — shared utilities (`git`, `exec`, workdir)
     - `types.ts` — shared extension types
 
