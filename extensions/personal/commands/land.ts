@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 
 import { runCommand, summarizeError } from "../utils/exec";
 import {
@@ -90,13 +91,13 @@ async function readPullRequest(
   return pr ? { pr } : { error: "GitHub CLI returned invalid PR data" };
 }
 
-async function selectPullRequest(
+async function selectOpenPullRequests(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   repoRoot: string,
-): Promise<PullRequest | undefined> {
+): Promise<PullRequest[]> {
   const current = await readPullRequest(pi, repoRoot);
-  if (current.pr) return current.pr;
+  if (current.pr && current.pr.state !== "OPEN") return [current.pr];
 
   const result = await runCommand(
     pi,
@@ -105,21 +106,83 @@ async function selectPullRequest(
     repoRoot,
   );
   if (result.code !== 0) {
+    if (current.pr) return [current.pr];
     ctx.ui.notify(`/land: failed to find pull requests: ${summarizeError(result)}`, "error");
-    return undefined;
+    return [];
   }
 
   const prs = parseJson<PullRequest[]>(result.stdout) ?? [];
   if (prs.length === 0) {
+    if (current.pr) return [current.pr];
     ctx.ui.notify("/land: no pull request is associated with this branch and no open PRs were found", "warning");
-    return undefined;
+    return [];
   }
+
+  if (current.pr && prs.length === 1 && prs[0].number === current.pr.number) return [current.pr];
 
   const labels = prs.map((pr) => `#${pr.number} ${pr.title} (${pr.headRefName} → ${pr.baseRefName})`);
   ctx.ui.setStatus(LAND_STATUS_PREFIX, undefined);
-  const choice = await ctx.ui.select("Select pull request", labels);
-  const index = choice ? labels.indexOf(choice) : -1;
-  return index >= 0 ? prs[index] : undefined;
+
+  // RPC supports the standard select dialog but not custom checklist components.
+  if (ctx.mode !== "tui") {
+    if (current.pr) return [current.pr];
+    const choice = await ctx.ui.select("Select pull request", labels);
+    const index = choice ? labels.indexOf(choice) : -1;
+    return index >= 0 ? [prs[index]] : [];
+  }
+
+  const selected = await ctx.ui.custom<number[] | null>((tui, theme, _keybindings, done) => {
+    const currentIndex = current.pr ? prs.findIndex((pr) => pr.number === current.pr!.number) : -1;
+    let cursor = Math.max(0, currentIndex);
+    const checked = new Set<number>(currentIndex >= 0 ? [currentIndex] : []);
+    const pageSize = Math.min(prs.length, 12);
+
+    return {
+      render(width: number): string[] {
+        const start = Math.max(0, Math.min(cursor - Math.floor(pageSize / 2), prs.length - pageSize));
+        const visible = prs.slice(start, start + pageSize);
+        const lines = [
+          truncateToWidth(theme.fg("accent", theme.bold(`Select pull requests (${checked.size} selected)`)), width),
+          ...visible.map((pr, offset) => {
+            const index = start + offset;
+            const pointer = index === cursor ? "›" : " ";
+            const mark = checked.has(index) ? "◉" : "○";
+            const label = `${pointer} ${mark} ${labels[index]}`;
+            return truncateToWidth(
+              index === cursor ? theme.fg("accent", label) : label,
+              width,
+            );
+          }),
+        ];
+        if (prs.length > pageSize) {
+          lines.push(theme.fg("dim", `${start + 1}-${start + visible.length} of ${prs.length}`));
+        }
+        lines.push(theme.fg("dim", "↑↓ navigate • space toggle • a toggle all • enter continue • esc cancel"));
+        return lines.map((line) => truncateToWidth(line, width));
+      },
+      handleInput(data: string): void {
+        if (matchesKey(data, Key.up)) {
+          cursor = (cursor - 1 + prs.length) % prs.length;
+        } else if (matchesKey(data, Key.down)) {
+          cursor = (cursor + 1) % prs.length;
+        } else if (matchesKey(data, Key.space)) {
+          if (checked.has(cursor)) checked.delete(cursor);
+          else checked.add(cursor);
+        } else if (matchesKey(data, "a")) {
+          if (checked.size === prs.length) checked.clear();
+          else prs.forEach((_pr, index) => checked.add(index));
+        } else if (matchesKey(data, Key.enter)) {
+          if (checked.size > 0) done([...checked].sort((a, b) => a - b));
+        } else if (matchesKey(data, Key.escape)) {
+          done(null);
+        }
+        tui.requestRender();
+      },
+      invalidate(): void {},
+    };
+  });
+
+  return selected?.map((index) => prs[index]) ?? [];
 }
 
 async function chooseRemote(
@@ -251,6 +314,144 @@ function actionOptions(pr: PullRequest): Array<{ label: string; action: LandActi
   return [{ label: `Clean up branches for ${pr.state.toLowerCase()} PR`, action: "cleanup" }];
 }
 
+async function landPullRequest(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  repoRoot: string,
+  pr: PullRequest,
+  dryRun: boolean,
+): Promise<boolean> {
+  // The inspection is complete before the interactive action UI opens. Leaving
+  // this status set renders it below the dialog's bottom border.
+  ctx.ui.setStatus(LAND_STATUS_PREFIX, undefined);
+
+  ctx.ui.notify(
+    `PR #${pr.number}: ${pr.title}\n${pr.headRefName} → ${pr.baseRefName} | ${pr.state}`
+      + `${pr.isDraft ? " | draft" : ""} | ${pr.mergeStateStatus ?? pr.mergeable ?? "status unknown"}`
+      + ` | ${checkSummary(pr)}`,
+    "info",
+  );
+
+  const actions = actionOptions(pr);
+  const actionLabel = await ctx.ui.select(`Select action for PR #${pr.number}`, [...actions.map((item) => item.label), "Cancel"]);
+  const action = actions.find((item) => item.label === actionLabel)?.action;
+  if (!action) {
+    ctx.ui.notify("/land canceled", "warning");
+    return false;
+  }
+
+  let method: MergeMethod | undefined;
+  const markReady = pr.isDraft && (action === "merge" || action === "auto");
+  if (markReady) {
+    const ready = await ctx.ui.confirm(
+      "Draft pull request",
+      `PR #${pr.number} is a draft. Mark it ready for review before merging?`,
+    );
+    if (!ready) {
+      ctx.ui.notify("/land canceled; draft PR was not changed", "warning");
+      return false;
+    }
+  }
+  if (action === "merge" || action === "auto") {
+    const methodLabel = await ctx.ui.select("Merge method", ["Squash", "Merge commit", "Rebase"]);
+    method = methodLabel === "Squash" ? "squash" : methodLabel === "Merge commit" ? "merge" : methodLabel === "Rebase" ? "rebase" : undefined;
+    if (!method) {
+      ctx.ui.notify("/land canceled", "warning");
+      return false;
+    }
+  }
+
+  const deleteRemote = await ctx.ui.confirm(
+    "Remote branch cleanup",
+    `Delete remote branch ${pr.headRefName} after the PR action?`,
+  );
+  const deleteLocal = await ctx.ui.confirm(
+    "Local branch cleanup",
+    `Switch to ${pr.baseRefName}, update it, and delete local branch ${pr.headRefName}?`,
+  );
+
+  const plan = [
+    `PR: #${pr.number} ${pr.title}`,
+    `Action: ${action === "cleanup" ? "cleanup only" : action}${method ? ` (${method})` : ""}`,
+    `Mark draft ready: ${markReady ? "yes" : "no"}`,
+    `Delete remote branch: ${deleteRemote ? "yes" : "no"}`,
+    `Delete local branch: ${deleteLocal ? "yes" : "no"}`,
+  ].join("\n");
+  if (!(await ctx.ui.confirm("Confirm /land", `${plan}\n\n${dryRun ? "Preview only?" : "Proceed?"}`))) {
+    ctx.ui.notify("/land canceled", "warning");
+    return false;
+  }
+  if (dryRun) {
+    ctx.ui.notify(`/land dry run; no changes made\n${plan}`, "info");
+    return true;
+  }
+
+  let finalState = pr.state;
+  if (markReady) {
+    ctx.ui.setStatus(LAND_STATUS_PREFIX, "Marking pull request ready...");
+    const ready = await runCommand(pi, "gh", ["pr", "ready", pr.url], repoRoot);
+    if (ready.code !== 0) {
+      ctx.ui.notify(`/land: failed to mark PR ready: ${summarizeError(ready)}`, "error");
+      return true;
+    }
+    pr = { ...pr, isDraft: false };
+    ctx.ui.notify(`/land: PR #${pr.number} marked ready for review`, "info");
+  }
+
+  if (action !== "cleanup") {
+    ctx.ui.setStatus(LAND_STATUS_PREFIX, action === "close" ? "Closing pull request..." : "Merging pull request...");
+    const commandArgs = action === "close"
+      ? ["pr", "close", pr.url]
+      : ["pr", "merge", pr.url, `--${method!}`, ...(action === "auto" ? ["--auto"] : [])];
+
+    const result = await runCommand(pi, "gh", commandArgs, repoRoot);
+    if (result.code !== 0) {
+      ctx.ui.notify(`/land: PR action failed: ${summarizeError(result)}`, "error");
+      return true;
+    }
+
+    const refreshed = await readPullRequest(pi, repoRoot, pr.url);
+    if (refreshed.pr) {
+      pr = refreshed.pr;
+      finalState = pr.state;
+    }
+    if (finalState === "OPEN") {
+      ctx.ui.notify(
+        `/land: PR #${pr.number} remains open; merge is queued or auto-merge is enabled. Branch cleanup deferred.`,
+        "info",
+      );
+      return true;
+    }
+  }
+
+  if (deleteRemote) {
+    ctx.ui.setStatus(LAND_STATUS_PREFIX, `Deleting remote branch ${pr.headRefName}...`);
+    const remote = await chooseRemote(pi, ctx, repoRoot, pr.headRefName);
+    if (!remote) {
+      ctx.ui.notify("/land: no remote available for branch deletion", "warning");
+    } else {
+      const removeRemote = await runCommand(pi, "git", ["push", remote, "--delete", pr.headRefName], repoRoot);
+      if (removeRemote.code !== 0) {
+        const detail = summarizeError(removeRemote);
+        if (/remote ref does not exist|unable to delete/i.test(detail)) {
+          ctx.ui.notify(`/land: remote branch ${pr.headRefName} is already absent`, "info");
+        } else {
+          ctx.ui.notify(`/land: failed to delete remote branch: ${detail}`, "warning");
+        }
+      }
+    }
+  }
+
+  const localCleaned = deleteLocal ? await cleanupLocalBranch(pi, ctx, repoRoot, pr) : false;
+  ctx.ui.notify(
+    `/land: PR #${pr.number} ${finalState.toLowerCase()}`
+      + `${deleteRemote ? " | remote cleanup requested" : ""}`
+      + `${localCleaned ? ` | deleted local ${pr.headRefName}` : ""}`,
+    "info",
+  );
+  return true;
+}
+
 export async function runLandWorkflow(
   args: string,
   pi: ExtensionAPI,
@@ -278,144 +479,22 @@ export async function runLandWorkflow(
     const tokens = args.trim().split(/\s+/).filter(Boolean);
     const dryRun = tokens.includes("--dry-run");
     const target = tokens.find((token) => token !== "--dry-run") ?? "";
-    let pr: PullRequest | undefined;
+    let prs: PullRequest[];
     if (target) {
       const result = await readPullRequest(pi, repoRoot, target);
       if (!result.pr) {
         ctx.ui.notify(`/land: failed to read PR ${target}: ${result.error}`, "error");
         return;
       }
-      pr = result.pr;
+      prs = [result.pr];
     } else {
-      pr = await selectPullRequest(pi, ctx, repoRoot);
+      prs = await selectOpenPullRequests(pi, ctx, repoRoot);
     }
-    if (!pr) return;
+    if (prs.length === 0) return;
 
-    // The inspection is complete before the interactive action UI opens. Leaving
-    // this status set renders it below the dialog's bottom border.
-    ctx.ui.setStatus(LAND_STATUS_PREFIX, undefined);
-
-    ctx.ui.notify(
-      `PR #${pr.number}: ${pr.title}\n${pr.headRefName} → ${pr.baseRefName} | ${pr.state}`
-        + `${pr.isDraft ? " | draft" : ""} | ${pr.mergeStateStatus ?? pr.mergeable ?? "status unknown"}`
-        + ` | ${checkSummary(pr)}`,
-      "info",
-    );
-
-    const actions = actionOptions(pr);
-    const actionLabel = await ctx.ui.select("Select PR action", [...actions.map((item) => item.label), "Cancel"]);
-    const action = actions.find((item) => item.label === actionLabel)?.action;
-    if (!action) {
-      ctx.ui.notify("/land canceled", "warning");
-      return;
+    for (const pr of prs) {
+      if (!(await landPullRequest(pi, ctx, repoRoot, pr, dryRun))) break;
     }
-
-    let method: MergeMethod | undefined;
-    const markReady = pr.isDraft && (action === "merge" || action === "auto");
-    if (markReady) {
-      const ready = await ctx.ui.confirm(
-        "Draft pull request",
-        `PR #${pr.number} is a draft. Mark it ready for review before merging?`,
-      );
-      if (!ready) {
-        ctx.ui.notify("/land canceled; draft PR was not changed", "warning");
-        return;
-      }
-    }
-    if (action === "merge" || action === "auto") {
-      const methodLabel = await ctx.ui.select("Merge method", ["Squash", "Merge commit", "Rebase"]);
-      method = methodLabel === "Squash" ? "squash" : methodLabel === "Merge commit" ? "merge" : methodLabel === "Rebase" ? "rebase" : undefined;
-      if (!method) return;
-    }
-
-    const deleteRemote = await ctx.ui.confirm(
-      "Remote branch cleanup",
-      `Delete remote branch ${pr.headRefName} after the PR action?`,
-    );
-    const deleteLocal = await ctx.ui.confirm(
-      "Local branch cleanup",
-      `Switch to ${pr.baseRefName}, update it, and delete local branch ${pr.headRefName}?`,
-    );
-
-    const plan = [
-      `PR: #${pr.number} ${pr.title}`,
-      `Action: ${action === "cleanup" ? "cleanup only" : action}${method ? ` (${method})` : ""}`,
-      `Mark draft ready: ${markReady ? "yes" : "no"}`,
-      `Delete remote branch: ${deleteRemote ? "yes" : "no"}`,
-      `Delete local branch: ${deleteLocal ? "yes" : "no"}`,
-    ].join("\n");
-    if (!(await ctx.ui.confirm("Confirm /land", `${plan}\n\n${dryRun ? "Preview only?" : "Proceed?"}`))) {
-      ctx.ui.notify("/land canceled", "warning");
-      return;
-    }
-    if (dryRun) {
-      ctx.ui.notify(`/land dry run; no changes made\n${plan}`, "info");
-      return;
-    }
-
-    let finalState = pr.state;
-    if (markReady) {
-      ctx.ui.setStatus(LAND_STATUS_PREFIX, "Marking pull request ready...");
-      const ready = await runCommand(pi, "gh", ["pr", "ready", pr.url], repoRoot);
-      if (ready.code !== 0) {
-        ctx.ui.notify(`/land: failed to mark PR ready: ${summarizeError(ready)}`, "error");
-        return;
-      }
-      pr = { ...pr, isDraft: false };
-      ctx.ui.notify(`/land: PR #${pr.number} marked ready for review`, "info");
-    }
-
-    if (action !== "cleanup") {
-      ctx.ui.setStatus(LAND_STATUS_PREFIX, action === "close" ? "Closing pull request..." : "Merging pull request...");
-      const commandArgs = action === "close"
-        ? ["pr", "close", pr.url]
-        : ["pr", "merge", pr.url, `--${method!}`, ...(action === "auto" ? ["--auto"] : [])];
-
-      const result = await runCommand(pi, "gh", commandArgs, repoRoot);
-      if (result.code !== 0) {
-        ctx.ui.notify(`/land: PR action failed: ${summarizeError(result)}`, "error");
-        return;
-      }
-
-      const refreshed = await readPullRequest(pi, repoRoot, pr.url);
-      if (refreshed.pr) {
-        pr = refreshed.pr;
-        finalState = pr.state;
-      }
-      if (finalState === "OPEN") {
-        ctx.ui.notify(
-          `/land: PR #${pr.number} remains open; merge is queued or auto-merge is enabled. Branch cleanup deferred.`,
-          "info",
-        );
-        return;
-      }
-    }
-
-    if (deleteRemote) {
-      ctx.ui.setStatus(LAND_STATUS_PREFIX, `Deleting remote branch ${pr.headRefName}...`);
-      const remote = await chooseRemote(pi, ctx, repoRoot, pr.headRefName);
-      if (!remote) {
-        ctx.ui.notify("/land: no remote available for branch deletion", "warning");
-      } else {
-        const removeRemote = await runCommand(pi, "git", ["push", remote, "--delete", pr.headRefName], repoRoot);
-        if (removeRemote.code !== 0) {
-          const detail = summarizeError(removeRemote);
-          if (/remote ref does not exist|unable to delete/i.test(detail)) {
-            ctx.ui.notify(`/land: remote branch ${pr.headRefName} is already absent`, "info");
-          } else {
-            ctx.ui.notify(`/land: failed to delete remote branch: ${detail}`, "warning");
-          }
-        }
-      }
-    }
-
-    const localCleaned = deleteLocal ? await cleanupLocalBranch(pi, ctx, repoRoot, pr) : false;
-    ctx.ui.notify(
-      `/land: PR #${pr.number} ${finalState.toLowerCase()}`
-        + `${deleteRemote ? " | remote cleanup requested" : ""}`
-        + `${localCleaned ? ` | deleted local ${pr.headRefName}` : ""}`,
-      "info",
-    );
   } finally {
     ctx.ui.setStatus(LAND_STATUS_PREFIX, undefined);
   }
