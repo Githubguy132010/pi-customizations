@@ -131,7 +131,7 @@ export async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: Exten
 
   let commitMessage = args.trim();
   if (hasChanges && !commitMessage) {
-    ctx.ui.setStatus(YEET_STATUS_PREFIX, "Generating commit message with GPT-5.6 Luna...");
+    ctx.ui.setStatus(YEET_STATUS_PREFIX, "Generating commit message...");
     try {
       commitMessage = await generateCommitMessage(pi, ctx, repoRoot, status.stdout);
       ctx.ui.notify(`/yeet: generated commit message: "${commitMessage}"`, "info");
