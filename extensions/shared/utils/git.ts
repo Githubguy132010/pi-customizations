@@ -4,7 +4,7 @@ import type { ExtensionContext, ExtensionAPI } from "@earendil-works/pi-coding-a
 
 import type { ExecResultLike, GitRemote } from "../types";
 import { runCommand } from "./exec";
-import { syncSessionWorkdirFromHistory } from "./sessionWorkdir";
+import { resolveExtensionWorkdir } from "../integrations/workdir";
 
 export function getChangedFiles(result: ExecResultLike): string[] {
   return result.stdout
@@ -14,7 +14,7 @@ export function getChangedFiles(result: ExecResultLike): string[] {
 }
 
 export async function resolveRepoRoot(pi: ExtensionAPI, ctx: ExtensionContext): Promise<string | undefined> {
-  const cwd = syncSessionWorkdirFromHistory(ctx);
+  const cwd = resolveExtensionWorkdir(pi, ctx);
   const result = await runCommand(pi, "git", ["rev-parse", "--show-toplevel"], cwd);
   if (result.code !== 0) {
     return undefined;

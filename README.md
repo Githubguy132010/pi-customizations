@@ -1,6 +1,6 @@
 # pi-customizations
 
-Personal Pi extension customizations.
+Personal Pi customizations, packaged as independent extensions.
 
 ## Install
 
@@ -10,21 +10,28 @@ From this directory:
 pi install .
 ```
 
-## Structure
+Then run `pi config` to enable or disable each customization independently. Press Tab in
+`pi config` to switch between global and project-local settings.
 
-- `extensions/`
-  - `personal-policy/` — enforces tool-policy behavior
-  - `personal-session/` — session lifecycle hooks and workdir persistence
-  - `personal-commands/` — `/yeet` and `/land` commands and workflows
-  - `personal/` — shared modules and utilities:
-    - `commands/` — command handler logic (e.g. `yeet`)
-    - `events/` — shared event handlers
-    - `utils/` — shared utilities (`git`, `exec`, workdir)
-    - `types.ts` — shared extension types
+## Extensions
 
-## Included behavior
+| Extension | Behavior |
+| --- | --- |
+| `extensions/bash-only/index.ts` | Enforces a bash-only tool policy. |
+| `extensions/session-workdir/index.ts` | Persists and restores each session's working directory. |
+| `extensions/yeet/index.ts` | Adds `/yeet` for AI-assisted commits, pushes, and PR creation. |
+| `extensions/land/index.ts` | Adds `/land` for merging or closing PRs and cleaning up branches. |
 
-- Enforces a bash-only tool policy
-- Adds `/yeet` for GPT-5.6 Luna commit-message, feature-branch, and PR-description generation with interactive commit/push/PR automation
-- Adds `/land [PR-number-or-URL]` to select one or more open GitHub PRs, merge or close them, and optionally delete their local and remote branches (`--dry-run` previews each selected plan)
-- Persists session working directory so it is restored on `/resume` and `/reload`
+`/yeet` only offers its “create PR + land” workflow when the land extension is enabled.
+Disabling land therefore removes both `/land` and its integration with `/yeet`.
+
+Shared implementation modules live in `extensions/shared/`; they are not extension
+entrypoints and do not appear as separate toggles.
+
+## Commands
+
+- `/yeet` generates GPT-5.6 Luna commit messages, feature branch names, and PR
+  descriptions, with interactive commit/push/PR automation.
+- `/land [PR-number-or-URL]` selects one or more open GitHub PRs, merges or closes
+  them, and optionally deletes their local and remote branches. Add `--dry-run` to
+  preview each selected plan.

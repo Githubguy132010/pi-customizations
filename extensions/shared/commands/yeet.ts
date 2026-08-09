@@ -2,7 +2,7 @@ import { join, relative } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { runCommand, summarizeError } from "../utils/exec";
-import { runLandWorkflow } from "./land";
+import { resolveLandWorkflow } from "../integrations/land";
 import {
   collectGitRemotes,
   formatPrBody,
@@ -283,12 +283,16 @@ export async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: Exten
   const changed = getChangedFiles(status);
   const hasChanges = changed.length > 0;
 
-  const workflow = await ctx.ui.select("Select yeet workflow", [
+  const landWorkflow = resolveLandWorkflow(pi);
+  const workflows = [
     "Commit only",
     "Commit + push",
     "Commit + push + create PR",
-    "Commit + push + create PR + land",
-  ]);
+  ];
+  if (landWorkflow) {
+    workflows.push("Commit + push + create PR + land");
+  }
+  const workflow = await ctx.ui.select("Select yeet workflow", workflows);
 
   if (!workflow) {
     ctx.ui.notify("/yeet canceled", "warning");
@@ -543,7 +547,7 @@ export async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: Exten
     ctx.ui.notify(summary.join(" | "), "info");
 
     if (doLand && createdPrUrl) {
-      await runLandWorkflow(createdPrUrl, pi, ctx);
+      await landWorkflow!(createdPrUrl, ctx);
     } else if (doPr) {
       ctx.ui.notify("/yeet: run /land from this branch when the PR is ready", "info");
     }
