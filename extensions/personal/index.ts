@@ -153,6 +153,16 @@ async function resolveRepoRoot(pi: ExtensionAPI, ctx: ExtensionContext): Promise
   return result.stdout.trim();
 }
 
+async function getLatestCommitMessage(pi: ExtensionAPI, cwd: string): Promise<string | undefined> {
+  const result = await runCommand(pi, "git", ["log", "-1", "--pretty=%B"], cwd);
+  if (result.code !== 0) {
+    return undefined;
+  }
+
+  const message = result.stdout.trim();
+  return message.length > 0 ? message : undefined;
+}
+
 async function collectGitRemotes(pi: ExtensionAPI, cwd: string): Promise<GitRemote[]> {
   const result = await runCommand(pi, "git", ["remote", "-v"], cwd);
   if (result.code !== 0) {
@@ -259,10 +269,7 @@ async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: ExtensionCon
   }
 
   const changed = getChangedFiles(status);
-  if (changed.length === 0) {
-    ctx.ui.notify("/yeet: nothing to commit", "warning");
-    return;
-  }
+  const hasChanges = changed.length > 0;
 
   const workflow = await ctx.ui.select("Select yeet workflow", [
     "Commit only",
@@ -279,18 +286,20 @@ async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: ExtensionCon
   const doPr = workflow === "Commit + push + create PR";
 
   let commitMessage = args.trim();
-  if (!commitMessage) {
-    const message = await ctx.ui.input("Commit message", "chore: ");
-    if (!message) {
-      ctx.ui.notify("/yeet canceled", "warning");
+  if (hasChanges) {
+    if (!commitMessage) {
+      const message = await ctx.ui.input("Commit message", "chore: ");
+      if (!message) {
+        ctx.ui.notify("/yeet canceled", "warning");
+        return;
+      }
+      commitMessage = message.trim();
+    }
+
+    if (!commitMessage) {
+      ctx.ui.notify("/yeet: commit message cannot be empty", "warning");
       return;
     }
-    commitMessage = message.trim();
-  }
-
-  if (!commitMessage) {
-    ctx.ui.notify("/yeet: commit message cannot be empty", "warning");
-    return;
   }
 
   let remoteName: string | undefined;
@@ -316,23 +325,46 @@ async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: ExtensionCon
     }
   }
 
+  if (!hasChanges) {
+    if (workflow === "Commit only") {
+      ctx.ui.notify("/yeet: nothing to commit", "warning");
+      return;
+    }
+
+    if (!commitMessage) {
+      const latestMessage = await getLatestCommitMessage(pi, repoRoot);
+      if (!latestMessage) {
+        ctx.ui.notify("/yeet: no local changes found and no previous commit message available", "warning");
+        return;
+      }
+      commitMessage = latestMessage;
+    }
+  }
+
+  if (!commitMessage) {
+    ctx.ui.notify("/yeet: commit message cannot be empty", "warning");
+    return;
+  }
+
   ctx.ui.setStatus(STATUS_PREFIX, "Preparing yeet...");
+  let pushBranch: string | undefined;
 
   try {
-    const addAll = await runCommand(pi, "git", ["add", "-A"], repoRoot);
-    if (addAll.code !== 0) {
-      ctx.ui.notify(`/yeet: git add failed: ${summarizeError(addAll)}`, "error");
-      return;
+    if (hasChanges) {
+      const addAll = await runCommand(pi, "git", ["add", "-A"], repoRoot);
+      if (addAll.code !== 0) {
+        ctx.ui.notify(`/yeet: git add failed: ${summarizeError(addAll)}`, "error");
+        return;
+      }
+
+      ctx.ui.setStatus(STATUS_PREFIX, "Committing...");
+      const commit = await runCommand(pi, "git", ["commit", "-m", commitMessage], repoRoot);
+      if (commit.code !== 0) {
+        ctx.ui.notify(`/yeet: git commit failed: ${summarizeError(commit)}`, "error");
+        return;
+      }
     }
 
-    ctx.ui.setStatus(STATUS_PREFIX, "Committing...");
-    const commit = await runCommand(pi, "git", ["commit", "-m", commitMessage], repoRoot);
-    if (commit.code !== 0) {
-      ctx.ui.notify(`/yeet: git commit failed: ${summarizeError(commit)}`, "error");
-      return;
-    }
-
-    let pushBranch: string | undefined;
     if (doPush && remoteName) {
       const head = await runCommand(pi, "git", ["rev-parse", "--abbrev-ref", "HEAD"], repoRoot);
       if (head.code !== 0 || !head.stdout.trim()) {
@@ -414,7 +446,10 @@ async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: ExtensionCon
       ctx.ui.notify(`/yeet: PR created\n${pr.stdout.trim() || "(no URL returned)"}`, "info");
     }
 
-    const summary = [`/yeet: committed \"${commitMessage}\"`, `Branch: ${pushBranch ?? "current"}`];
+    const summary = [
+      hasChanges ? `/yeet: committed "${commitMessage}"` : `/yeet: using latest commit`,
+      `Branch: ${pushBranch ?? "current"}`,
+    ];
     if (doPush && remoteName) {
       summary.push(`Pushed: ${remoteName}/${pushBranch ?? "HEAD"}`);
     }
@@ -426,7 +461,6 @@ async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: ExtensionCon
     ctx.ui.setStatus(STATUS_PREFIX, undefined);
   }
 }
-
 function startTurn() {
   TpsState.metrics = {
     active: true,
