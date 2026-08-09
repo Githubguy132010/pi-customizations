@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-import { keepOnlyBashToolset } from "../personal/events/toolPolicy";
+import { keepOnlyBashToolset } from "../shared/events/toolPolicy";
 
 export default function (pi: ExtensionAPI) {
   pi.on("session_start", () => {
