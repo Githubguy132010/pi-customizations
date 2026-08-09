@@ -116,6 +116,7 @@ async function selectPullRequest(
   }
 
   const labels = prs.map((pr) => `#${pr.number} ${pr.title} (${pr.headRefName} → ${pr.baseRefName})`);
+  ctx.ui.setStatus(LAND_STATUS_PREFIX, undefined);
   const choice = await ctx.ui.select("Select pull request", labels);
   const index = choice ? labels.indexOf(choice) : -1;
   return index >= 0 ? prs[index] : undefined;
@@ -289,6 +290,10 @@ export async function runLandWorkflow(
       pr = await selectPullRequest(pi, ctx, repoRoot);
     }
     if (!pr) return;
+
+    // The inspection is complete before the interactive action UI opens. Leaving
+    // this status set renders it below the dialog's bottom border.
+    ctx.ui.setStatus(LAND_STATUS_PREFIX, undefined);
 
     ctx.ui.notify(
       `PR #${pr.number}: ${pr.title}\n${pr.headRefName} → ${pr.baseRefName} | ${pr.state}`
