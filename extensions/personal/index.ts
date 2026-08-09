@@ -23,6 +23,16 @@ interface GitRemote {
   push?: string;
 }
 
+interface SessionWorkdirEntry {
+  type: "custom";
+  customType: string;
+  data?: {
+    cwd?: string;
+    reason?: string;
+    timestamp?: string;
+  };
+}
+
 const TpsState: { metrics: TurnMetrics } = {
   metrics: {
     active: false,
@@ -35,6 +45,9 @@ const TpsState: { metrics: TurnMetrics } = {
 
 const STATUS_THROTTLE_MS = 250;
 const STATUS_PREFIX = "yeet";
+const WORKDIR_ENTRY_TYPE = "pi-workdir";
+
+let sessionWorkdir = process.cwd();
 
 function keepOnlyBashToolset(pi: ExtensionAPI) {
   const active = pi.getActiveTools();
@@ -48,7 +61,7 @@ async function runCommand(
   pi: ExtensionAPI,
   command: string,
   args: string[],
-  cwd: string,
+  cwd: string = sessionWorkdir,
 ): Promise<ExecResultLike> {
   try {
     return await pi.exec(command, args, { cwd });
@@ -62,6 +75,66 @@ async function runCommand(
   }
 }
 
+function isExistingDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function extractSavedWorkdir(entries: readonly unknown[]): string | undefined {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i] as SessionWorkdirEntry | undefined;
+    if (!entry || entry.type !== "custom" || entry.customType !== WORKDIR_ENTRY_TYPE) {
+      continue;
+    }
+
+    const cwd = entry.data?.cwd;
+    if (typeof cwd === "string" && cwd.trim().length > 0) {
+      return cwd.trim();
+    }
+  }
+
+  return undefined;
+}
+
+function syncSessionWorkdirFromHistory(ctx: ExtensionContext): string {
+  const entries = ctx.sessionManager.getEntries();
+  const fromSession = extractSavedWorkdir(entries);
+  const headerCwd = ctx.sessionManager.getCwd();
+
+  const chosen = fromSession || headerCwd || process.cwd();
+  if (isExistingDirectory(chosen)) {
+    sessionWorkdir = chosen;
+    try {
+      if (process.cwd() !== chosen) {
+        process.chdir(chosen);
+      }
+    } catch {
+      // keep fallback to process cwd if chdir fails
+      sessionWorkdir = process.cwd();
+    }
+    return sessionWorkdir;
+  }
+
+  sessionWorkdir = process.cwd();
+  return sessionWorkdir;
+}
+
+function persistSessionWorkdir(pi: ExtensionAPI, reason: string) {
+  const cwd = sessionWorkdir;
+  if (!isExistingDirectory(cwd)) {
+    return;
+  }
+
+  pi.appendEntry(WORKDIR_ENTRY_TYPE, {
+    cwd,
+    reason,
+    timestamp: new Date().toISOString(),
+  });
+}
+
 function getChangedFiles(result: ExecResultLike): string[] {
   return result.stdout
     .split("\n")
@@ -70,7 +143,8 @@ function getChangedFiles(result: ExecResultLike): string[] {
 }
 
 async function resolveRepoRoot(pi: ExtensionAPI, ctx: ExtensionContext): Promise<string | undefined> {
-  const result = await runCommand(pi, "git", ["rev-parse", "--show-toplevel"], ctx.cwd);
+  const cwd = syncSessionWorkdirFromHistory(ctx);
+  const result = await runCommand(pi, "git", ["rev-parse", "--show-toplevel"], cwd);
   if (result.code !== 0) {
     ctx.ui.notify("/yeet: not in a git repository", "error");
     return undefined;
@@ -166,6 +240,8 @@ function summarizeError(result: ExecResultLike): string {
 }
 
 async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+  syncSessionWorkdirFromHistory(ctx);
+
   if (!ctx.hasUI) {
     ctx.ui.notify("/yeet requires interactive UI for now", "warning");
     return;
@@ -416,7 +492,10 @@ function maybeSetTps(ctx: ExtensionContext, force = false) {
 }
 
 export default function (pi: ExtensionAPI) {
-  pi.on("session_start", (_event: unknown, _ctx: unknown) => {
+  pi.on("session_start", async (event: { reason: "startup" | "reload" | "new" | "resume" | "fork"; }, ctx: ExtensionContext) => {
+    const reason = event.reason;
+    syncSessionWorkdirFromHistory(ctx);
+    persistSessionWorkdir(pi, reason);
     keepOnlyBashToolset(pi);
   });
 
@@ -486,7 +565,9 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  pi.on("session_shutdown", async (_event: unknown, ctx: ExtensionContext) => {
+  pi.on("session_shutdown", async (_event: { reason: "quit" | "reload" | "new" | "resume" | "fork"; targetSessionFile?: string }, ctx: ExtensionContext) => {
+    syncSessionWorkdirFromHistory(ctx);
+    persistSessionWorkdir(pi, _event.reason);
     stopTurn();
     ctx.ui.setStatus("live-tps", undefined);
     ctx.ui.setStatus(STATUS_PREFIX, undefined);
