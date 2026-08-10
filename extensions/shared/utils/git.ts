@@ -69,7 +69,7 @@ export function parseRemoteChoice(choice: string | undefined): string | undefine
   if (!choice) {
     return undefined;
   }
-  return choice.split(" ", 1)[0] ?? undefined;
+  return choice.split(" ", 1)[0];
 }
 
 export function findPullRequestTemplates(repoRoot: string): string[] {
