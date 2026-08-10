@@ -10,10 +10,16 @@
     "@earendil-works/pi-coding-agent": "^0.84.1",
     "@earendil-works/pi-tui": "^0.84.1",
     "@types/node": "^20.14.0",
-    "typescript": "^5.7.2"
+    "@vitest/coverage-v8": "^4.1.10",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.10"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "coverage": "vitest run --coverage",
+    "check": "npm run typecheck && npm test"
   },
   "pi": {
     "extensions": [

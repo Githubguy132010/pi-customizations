@@ -490,3 +490,17 @@ export async function runLandWorkflow(
     ctx.ui.setStatus(LAND_STATUS_PREFIX, undefined);
   }
 }
+
+/** Internal building blocks exposed for focused tests. Not part of the extension API. */
+export const __testing = {
+  parseJson,
+  hasPendingChecks,
+  checkSummary,
+  readPullRequest,
+  selectOpenPullRequests,
+  chooseRemote,
+  branchExists,
+  cleanupLocalBranch,
+  actionOptions,
+  landPullRequest,
+};

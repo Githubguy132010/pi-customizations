@@ -255,11 +255,9 @@ async function generateCommitMessage(
     .replace(/^`+|`+$/g, "")
     .replace(/^["']|["']$/g, "");
 
-  if (!generated) {
-    throw new Error("model returned an empty commit message");
-  }
-
-  return generated;
+  // completeWithLuna already rejects blank responses; a nonblank response always
+  // contains a nonblank line after trimming.
+  return generated!;
 }
 
 export async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
@@ -367,11 +365,6 @@ export async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: Exten
     }
   }
 
-  if (!commitMessage) {
-    ctx.ui.notify("/yeet: commit message cannot be empty", "warning");
-    return;
-  }
-
   ctx.ui.setStatus(YEET_STATUS_PREFIX, "Preparing yeet...");
   let pushBranch: string | undefined;
   let createdPrUrl: string | undefined;
@@ -397,7 +390,7 @@ export async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: Exten
       try {
         featureBranch = await findAvailableFeatureBranch(pi, repoRoot, remoteName!, requestedBranch);
       } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
+        const detail = (error as Error).message;
         ctx.ui.notify(`/yeet: unable to choose a feature branch: ${detail}`, "error");
         return;
       }
@@ -489,6 +482,8 @@ export async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: Exten
             } catch {
               ctx.ui.notify("/yeet: failed to read PR template", "warning");
             }
+          } else {
+            templateBody = undefined;
           }
         }
       }
@@ -539,7 +534,7 @@ export async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: Exten
       `Branch: ${pushBranch ?? "current"}`,
     ];
     if (doPush && remoteName) {
-      summary.push(`Pushed: ${remoteName}/${pushBranch ?? "HEAD"}`);
+      summary.push(`Pushed: ${remoteName}/${pushBranch}`);
     }
     if (doPr) {
       summary.push("PR requested");
@@ -555,3 +550,15 @@ export async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: Exten
     ctx.ui.setStatus(YEET_STATUS_PREFIX, undefined);
   }
 }
+
+/** Internal building blocks exposed for focused tests. Not part of the extension API. */
+export const __testing = {
+  completeWithLuna,
+  readDiff,
+  normalizeFeatureBranch,
+  generateFeatureBranch,
+  findAvailableFeatureBranch,
+  resolvePrBaseRef,
+  generatePrBody,
+  generateCommitMessage,
+};

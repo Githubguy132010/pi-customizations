@@ -40,3 +40,14 @@ entrypoints and do not appear as separate toggles.
 - `/land [PR-number-or-URL]` selects one or more open GitHub PRs, merges or closes
   them, and optionally deletes their local and remote branches. Add `--dry-run` to
   preview each selected plan.
+
+## Development
+
+```bash
+npm run check       # Type-check and run the test suite
+npm run test:watch  # Run tests in watch mode
+npm run coverage    # Generate text and HTML coverage reports
+```
+
+The tests use Vitest and mocked Pi APIs/command execution, so they do not modify real
+repositories, sessions, branches, or pull requests.
