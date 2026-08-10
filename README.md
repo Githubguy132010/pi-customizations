@@ -19,6 +19,7 @@ Then run `pi config` to enable or disable each customization independently. Pres
 | --- | --- |
 | `extensions/bash-only/index.ts` | Enforces a bash-only tool policy. |
 | `extensions/session-workdir/index.ts` | Persists and restores each session's working directory. |
+| `extensions/subagents/index.ts` | Runs isolated, read-only repository explorers in background worktrees. |
 | `extensions/slash-command-visibility/index.ts` | Hides selected built-in commands from slash autocomplete. |
 | `extensions/yeet/index.ts` | Adds `/yeet` for AI-assisted commits, pushes, and PR creation. |
 | `extensions/land/index.ts` | Adds `/land` for merging or closing PRs and cleaning up branches. |
@@ -32,6 +33,13 @@ The slash-command visibility extension hides `/name`, `/tree`, `/fork`, `/clone`
 
 Shared implementation modules live in `extensions/shared/`; they are not extension
 entrypoints and do not appear as separate toggles.
+
+The subagents extension is deliberately a foundation release: explorers can inspect a
+repository, receive steering messages, and return a report, but cannot edit, commit, or
+push. Explorers can message peers only through their owning main session's manager. Each
+explorer receives a detached worktree under its main session's private folder.
+Successful explorers are disposed and their worktree is permanently removed; failed
+workspaces remain available until a later recovery policy is introduced.
 
 ## Commands
 
