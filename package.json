@@ -1,14 +1,39 @@
 {
-  "name": "pi-customizations",
-  "version": "0.1.0",
-  "private": true,
+  "name": "@thatrandomnerd69/pi-coding-agent",
+  "version": "0.0.0-development",
+  "bin": {
+    "pi-coding-agent": "bin/pi-coding-agent.mjs"
+  },
   "keywords": [
-    "pi-package"
+    "coding-agent",
+    "ai",
+    "cli"
   ],
-  "description": "Independently toggleable personal Pi customizations.",
+  "description": "A standalone Pi coding agent distribution with opinionated workflow customizations.",
+  "files": [
+    "bin/",
+    "extensions/",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/githubguy132010/pi-customizations.git"
+  },
+  "bugs": {
+    "url": "https://github.com/githubguy132010/pi-customizations/issues"
+  },
+  "homepage": "https://github.com/githubguy132010/pi-customizations#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.1",
+    "@earendil-works/pi-tui": "0.84.1"
+  },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.84.1",
-    "@earendil-works/pi-tui": "^0.84.1",
     "@types/node": "^20.14.0",
     "@vitest/coverage-v8": "^4.1.10",
     "typescript": "^5.7.2",
@@ -19,11 +44,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
-    "check": "npm run typecheck && npm test"
-  },
-  "pi": {
-    "extensions": [
-      "extensions/*/index.ts"
-    ]
+    "check": "npm run typecheck && npm test",
+    "prepublishOnly": "npm run check && node scripts/verify-publish-version.mjs"
   }
 }

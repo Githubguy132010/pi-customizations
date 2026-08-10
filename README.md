@@ -1,17 +1,29 @@
-# pi-customizations
+# @thatrandomnerd69/pi-coding-agent
 
-Personal Pi customizations, packaged as independent extensions.
+An opinionated, standalone Pi coding agent distribution with personal workflow
+customizations built in.
 
 ## Install
 
-From this directory:
+Install the complete CLI from npm:
 
 ```bash
-pi install .
+npm install --global @thatrandomnerd69/pi-coding-agent
+pi-coding-agent
 ```
 
-Then run `pi config` to enable or disable each customization independently. Press Tab in
-`pi config` to switch between global and project-local settings.
+This installs the Pi runtime and the customizations together; a separate Pi installation
+is not required. The CLI preserves Pi's normal authentication, sessions, settings, modes,
+and command-line options.
+
+Check both the distribution build number and bundled upstream Pi version with:
+
+```bash
+pi-coding-agent --version
+# @thatrandomnerd69/pi-coding-agent build 4f9c2a7d81b3 (Pi 0.84.1)
+```
+
+The standalone CLI always loads all five bundled customizations.
 
 ## Extensions
 
@@ -44,10 +56,51 @@ entrypoints and do not appear as separate toggles.
 ## Development
 
 ```bash
+npm install
 npm run check       # Type-check and run the test suite
 npm run test:watch  # Run tests in watch mode
 npm run coverage    # Generate text and HTML coverage reports
+npm link            # Make pi-coding-agent available globally from this checkout
+pi-coding-agent     # Run the linked standalone CLI
 ```
 
 The tests use Vitest and mocked Pi APIs/command execution, so they do not modify real
 repositories, sessions, branches, or pull requests.
+
+## Publishing
+
+npm requires a unique SemVer value for every publication. Builds use the Git commit in
+the prerelease component, for example `0.0.0-git.4f9c2a7d81b3`. The committed manifests
+keep the non-publishable placeholder `0.0.0-development`; publishing rejects that value
+and any hash that does not match the current commit.
+
+### First build
+
+npm Trusted Publishing cannot be configured until the package exists. Publish the first
+build manually from a clean, committed checkout:
+
+```bash
+npm login
+test -z "$(git status --porcelain)"
+version="0.0.0-git.$(git rev-parse --short=12 HEAD)"
+npm version "$version" --no-git-tag-version --ignore-scripts
+npm publish --tag latest --access public
+```
+
+The `prepublishOnly` check runs the full test suite and verifies that the version contains
+the current commit hash.
+
+### Automatic builds
+
+After the first build exists, open its package settings on npmjs.com and configure a
+GitHub Actions Trusted Publisher with these exact values:
+
+- Organization or user: `githubguy132010`
+- Repository: `pi-customizations`
+- Workflow filename: `publish.yml`
+- Allowed action: `npm publish`
+
+The workflow in `.github/workflows/publish.yml` then tests and publishes every push to
+`main` as `0.0.0-git.<12-character-commit-hash>`. It uses GitHub OIDC instead of a stored
+npm token, publishes provenance, marks each new build as `latest`, and safely skips a
+commit that is already present on npm. It can also be rerun manually from GitHub Actions.
