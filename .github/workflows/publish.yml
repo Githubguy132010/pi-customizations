@@ -16,9 +16,6 @@ concurrency:
 
 jobs:
   publish:
-    permissions:
-      contents: read
-      id-token: write
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
