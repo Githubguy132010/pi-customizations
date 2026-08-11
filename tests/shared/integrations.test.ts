@@ -1,23 +1,23 @@
 import { describe, expect, it, vi } from "vitest";
-import { registerLandWorkflow, resolveLandWorkflow } from "../../extensions/shared/integrations/land";
+import { registerSettleWorkflow, resolveSettleWorkflow } from "../../extensions/shared/integrations/settle";
 import { registerWorkdirResolver, resolveExtensionWorkdir } from "../../extensions/shared/integrations/workdir";
 import { createContext, createPi } from "../helpers";
 
 describe("optional extension integrations", () => {
-  it("resolves a registered land workflow", () => {
+  it("resolves a registered settle workflow", () => {
     const pi = createPi();
     const workflow = vi.fn();
-    expect(resolveLandWorkflow(pi)).toBeUndefined();
-    registerLandWorkflow(pi, workflow);
-    expect(resolveLandWorkflow(pi)).toBe(workflow);
+    expect(resolveSettleWorkflow(pi)).toBeUndefined();
+    registerSettleWorkflow(pi, workflow);
+    expect(resolveSettleWorkflow(pi)).toBe(workflow);
   });
 
-  it("keeps the first land provider", () => {
+  it("keeps the first settle provider", () => {
     const pi = createPi();
     const first = vi.fn();
-    registerLandWorkflow(pi, first);
-    registerLandWorkflow(pi, vi.fn());
-    expect(resolveLandWorkflow(pi)).toBe(first);
+    registerSettleWorkflow(pi, first);
+    registerSettleWorkflow(pi, vi.fn());
+    expect(resolveSettleWorkflow(pi)).toBe(first);
   });
 
   it("uses the registered workdir resolver or context fallback", () => {

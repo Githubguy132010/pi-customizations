@@ -9,7 +9,7 @@ import {
   resolveRepoRoot,
 } from "../utils/git";
 
-export const LAND_STATUS_PREFIX = "land";
+export const SETTLE_STATUS_PREFIX = "settle";
 
 const PR_FIELDS = [
   "number",
@@ -37,7 +37,7 @@ interface PullRequest {
   statusCheckRollup?: Array<{ status?: string; conclusion?: string; state?: string }>;
 }
 
-type LandAction = "merge" | "auto" | "close" | "cleanup";
+type SettleAction = "merge" | "auto" | "close" | "cleanup";
 type MergeMethod = "merge" | "squash" | "rebase";
 
 function parseJson<T>(value: string): T | undefined {
@@ -107,21 +107,21 @@ async function selectOpenPullRequests(
   );
   if (result.code !== 0) {
     if (current.pr) return [current.pr];
-    ctx.ui.notify(`/land: failed to find pull requests: ${summarizeError(result)}`, "error");
+    ctx.ui.notify(`/settle: failed to find pull requests: ${summarizeError(result)}`, "error");
     return [];
   }
 
   const prs = parseJson<PullRequest[]>(result.stdout) ?? [];
   if (prs.length === 0) {
     if (current.pr) return [current.pr];
-    ctx.ui.notify("/land: no pull request is associated with this branch and no open PRs were found", "warning");
+    ctx.ui.notify("/settle: no pull request is associated with this branch and no open PRs were found", "warning");
     return [];
   }
 
   if (current.pr && prs.length === 1 && prs[0].number === current.pr.number) return [current.pr];
 
   const labels = prs.map((pr) => `#${pr.number} ${pr.title} (${pr.headRefName} → ${pr.baseRefName})`);
-  ctx.ui.setStatus(LAND_STATUS_PREFIX, undefined);
+  ctx.ui.setStatus(SETTLE_STATUS_PREFIX, undefined);
 
   // RPC supports the standard select dialog but not custom checklist components.
   if (ctx.mode !== "tui") {
@@ -223,36 +223,36 @@ async function cleanupLocalBranch(
   pr: PullRequest,
 ): Promise<boolean> {
   if (pr.headRefName === pr.baseRefName) {
-    ctx.ui.notify("/land: refusing to delete the PR base branch", "error");
+    ctx.ui.notify("/settle: refusing to delete the PR base branch", "error");
     return false;
   }
   if (!(await branchExists(pi, repoRoot, pr.headRefName))) {
-    ctx.ui.notify(`/land: local branch ${pr.headRefName} is already absent`, "info");
+    ctx.ui.notify(`/settle: local branch ${pr.headRefName} is already absent`, "info");
     return true;
   }
 
   const status = await runCommand(pi, "git", ["status", "--porcelain"], repoRoot);
   if (status.code !== 0 || status.stdout.trim()) {
-    ctx.ui.notify("/land: local cleanup skipped because the working tree is not clean", "warning");
+    ctx.ui.notify("/settle: local cleanup skipped because the working tree is not clean", "warning");
     return false;
   }
 
   const current = await runCommand(pi, "git", ["branch", "--show-current"], repoRoot);
   if (current.code !== 0) {
-    ctx.ui.notify(`/land: unable to determine current branch: ${summarizeError(current)}`, "warning");
+    ctx.ui.notify(`/settle: unable to determine current branch: ${summarizeError(current)}`, "warning");
     return false;
   }
 
   const remote = await chooseRemote(pi, ctx, repoRoot, pr.baseRefName);
   if (!remote) {
-    ctx.ui.notify("/land: local cleanup skipped because no Git remote could be selected", "warning");
+    ctx.ui.notify("/settle: local cleanup skipped because no Git remote could be selected", "warning");
     return false;
   }
 
-  ctx.ui.setStatus(LAND_STATUS_PREFIX, `Updating ${pr.baseRefName}...`);
+  ctx.ui.setStatus(SETTLE_STATUS_PREFIX, `Updating ${pr.baseRefName}...`);
   const fetch = await runCommand(pi, "git", ["fetch", "--prune", remote], repoRoot);
   if (fetch.code !== 0) {
-    ctx.ui.notify(`/land: fetch failed: ${summarizeError(fetch)}`, "warning");
+    ctx.ui.notify(`/settle: fetch failed: ${summarizeError(fetch)}`, "warning");
     return false;
   }
 
@@ -269,31 +269,31 @@ async function cleanupLocalBranch(
       );
     }
     if (checkout.code !== 0) {
-      ctx.ui.notify(`/land: failed to check out ${pr.baseRefName}: ${summarizeError(checkout)}`, "warning");
+      ctx.ui.notify(`/settle: failed to check out ${pr.baseRefName}: ${summarizeError(checkout)}`, "warning");
       return false;
     }
   }
 
   const update = await runCommand(pi, "git", ["pull", "--ff-only", remote, pr.baseRefName], repoRoot);
   if (update.code !== 0) {
-    ctx.ui.notify(`/land: could not fast-forward ${pr.baseRefName}: ${summarizeError(update)}`, "warning");
+    ctx.ui.notify(`/settle: could not fast-forward ${pr.baseRefName}: ${summarizeError(update)}`, "warning");
   }
 
-  ctx.ui.setStatus(LAND_STATUS_PREFIX, `Deleting ${pr.headRefName}...`);
+  ctx.ui.setStatus(SETTLE_STATUS_PREFIX, `Deleting ${pr.headRefName}...`);
   // Squash and rebase merges do not make the feature tip an ancestor of the
   // base branch, so Git's safe delete (-d) rejects branches that were already
-  // landed. The user explicitly approved deleting this branch in the plan.
+  // settled. The user explicitly approved deleting this branch in the plan.
   const remove = await runCommand(pi, "git", ["branch", "-D", pr.headRefName], repoRoot);
   if (remove.code !== 0) {
-    ctx.ui.notify(`/land: failed to delete local branch: ${summarizeError(remove)}`, "error");
+    ctx.ui.notify(`/settle: failed to delete local branch: ${summarizeError(remove)}`, "error");
     return false;
   }
   return true;
 }
 
-function actionOptions(pr: PullRequest): Array<{ label: string; action: LandAction }> {
+function actionOptions(pr: PullRequest): Array<{ label: string; action: SettleAction }> {
   if (pr.state === "OPEN") {
-    const actions: Array<{ label: string; action: LandAction }> = [
+    const actions: Array<{ label: string; action: SettleAction }> = [
       { label: "Merge PR now", action: "merge" },
     ];
     if (hasPendingChecks(pr)) {
@@ -305,7 +305,7 @@ function actionOptions(pr: PullRequest): Array<{ label: string; action: LandActi
   return [{ label: `Clean up branches for ${pr.state.toLowerCase()} PR`, action: "cleanup" }];
 }
 
-async function landPullRequest(
+async function settlePullRequest(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   repoRoot: string,
@@ -314,7 +314,7 @@ async function landPullRequest(
 ): Promise<boolean> {
   // The inspection is complete before the interactive action UI opens. Leaving
   // this status set renders it below the dialog's bottom border.
-  ctx.ui.setStatus(LAND_STATUS_PREFIX, undefined);
+  ctx.ui.setStatus(SETTLE_STATUS_PREFIX, undefined);
 
   ctx.ui.notify(
     `PR #${pr.number}: ${pr.title}\n${pr.headRefName} → ${pr.baseRefName} | ${pr.state}`
@@ -327,7 +327,7 @@ async function landPullRequest(
   const actionLabel = await ctx.ui.select(`Select action for PR #${pr.number}`, [...actions.map((item) => item.label), "Cancel"]);
   const action = actions.find((item) => item.label === actionLabel)?.action;
   if (!action) {
-    ctx.ui.notify("/land canceled", "warning");
+    ctx.ui.notify("/settle canceled", "warning");
     return false;
   }
 
@@ -339,7 +339,7 @@ async function landPullRequest(
       `PR #${pr.number} is a draft. Mark it ready for review before merging?`,
     );
     if (!ready) {
-      ctx.ui.notify("/land canceled; draft PR was not changed", "warning");
+      ctx.ui.notify("/settle canceled; draft PR was not changed", "warning");
       return false;
     }
   }
@@ -347,7 +347,7 @@ async function landPullRequest(
     const methodLabel = await ctx.ui.select("Merge method", ["Squash", "Merge commit", "Rebase"]);
     method = methodLabel === "Squash" ? "squash" : methodLabel === "Merge commit" ? "merge" : methodLabel === "Rebase" ? "rebase" : undefined;
     if (!method) {
-      ctx.ui.notify("/land canceled", "warning");
+      ctx.ui.notify("/settle canceled", "warning");
       return false;
     }
   }
@@ -368,36 +368,36 @@ async function landPullRequest(
     `Delete remote branch: ${deleteRemote ? "yes" : "no"}`,
     `Delete local branch: ${deleteLocal ? "yes" : "no"}`,
   ].join("\n");
-  if (!(await ctx.ui.confirm("Confirm /land", `${plan}\n\n${dryRun ? "Preview only?" : "Proceed?"}`))) {
-    ctx.ui.notify("/land canceled", "warning");
+  if (!(await ctx.ui.confirm("Confirm /settle", `${plan}\n\n${dryRun ? "Preview only?" : "Proceed?"}`))) {
+    ctx.ui.notify("/settle canceled", "warning");
     return false;
   }
   if (dryRun) {
-    ctx.ui.notify(`/land dry run; no changes made\n${plan}`, "info");
+    ctx.ui.notify(`/settle dry run; no changes made\n${plan}`, "info");
     return true;
   }
 
   let finalState = pr.state;
   if (markReady) {
-    ctx.ui.setStatus(LAND_STATUS_PREFIX, "Marking pull request ready...");
+    ctx.ui.setStatus(SETTLE_STATUS_PREFIX, "Marking pull request ready...");
     const ready = await runCommand(pi, "gh", ["pr", "ready", pr.url], repoRoot);
     if (ready.code !== 0) {
-      ctx.ui.notify(`/land: failed to mark PR ready: ${summarizeError(ready)}`, "error");
+      ctx.ui.notify(`/settle: failed to mark PR ready: ${summarizeError(ready)}`, "error");
       return true;
     }
     pr = { ...pr, isDraft: false };
-    ctx.ui.notify(`/land: PR #${pr.number} marked ready for review`, "info");
+    ctx.ui.notify(`/settle: PR #${pr.number} marked ready for review`, "info");
   }
 
   if (action !== "cleanup") {
-    ctx.ui.setStatus(LAND_STATUS_PREFIX, action === "close" ? "Closing pull request..." : "Merging pull request...");
+    ctx.ui.setStatus(SETTLE_STATUS_PREFIX, action === "close" ? "Closing pull request..." : "Merging pull request...");
     const commandArgs = action === "close"
       ? ["pr", "close", pr.url]
       : ["pr", "merge", pr.url, `--${method!}`, ...(action === "auto" ? ["--auto"] : [])];
 
     const result = await runCommand(pi, "gh", commandArgs, repoRoot);
     if (result.code !== 0) {
-      ctx.ui.notify(`/land: PR action failed: ${summarizeError(result)}`, "error");
+      ctx.ui.notify(`/settle: PR action failed: ${summarizeError(result)}`, "error");
       return true;
     }
 
@@ -408,7 +408,7 @@ async function landPullRequest(
     }
     if (finalState === "OPEN") {
       ctx.ui.notify(
-        `/land: PR #${pr.number} remains open; merge is queued or auto-merge is enabled. Branch cleanup deferred.`,
+        `/settle: PR #${pr.number} remains open; merge is queued or auto-merge is enabled. Branch cleanup deferred.`,
         "info",
       );
       return true;
@@ -416,18 +416,18 @@ async function landPullRequest(
   }
 
   if (deleteRemote) {
-    ctx.ui.setStatus(LAND_STATUS_PREFIX, `Deleting remote branch ${pr.headRefName}...`);
+    ctx.ui.setStatus(SETTLE_STATUS_PREFIX, `Deleting remote branch ${pr.headRefName}...`);
     const remote = await chooseRemote(pi, ctx, repoRoot, pr.headRefName);
     if (!remote) {
-      ctx.ui.notify("/land: no remote available for branch deletion", "warning");
+      ctx.ui.notify("/settle: no remote available for branch deletion", "warning");
     } else {
       const removeRemote = await runCommand(pi, "git", ["push", remote, "--delete", pr.headRefName], repoRoot);
       if (removeRemote.code !== 0) {
         const detail = summarizeError(removeRemote);
         if (/remote ref does not exist|unable to delete/i.test(detail)) {
-          ctx.ui.notify(`/land: remote branch ${pr.headRefName} is already absent`, "info");
+          ctx.ui.notify(`/settle: remote branch ${pr.headRefName} is already absent`, "info");
         } else {
-          ctx.ui.notify(`/land: failed to delete remote branch: ${detail}`, "warning");
+          ctx.ui.notify(`/settle: failed to delete remote branch: ${detail}`, "warning");
         }
       }
     }
@@ -435,7 +435,7 @@ async function landPullRequest(
 
   const localCleaned = deleteLocal ? await cleanupLocalBranch(pi, ctx, repoRoot, pr) : false;
   ctx.ui.notify(
-    `/land: PR #${pr.number} ${finalState.toLowerCase()}`
+    `/settle: PR #${pr.number} ${finalState.toLowerCase()}`
       + `${deleteRemote ? " | remote cleanup requested" : ""}`
       + `${localCleaned ? ` | deleted local ${pr.headRefName}` : ""}`,
     "info",
@@ -443,29 +443,29 @@ async function landPullRequest(
   return true;
 }
 
-export async function runLandWorkflow(
+export async function runSettleWorkflow(
   args: string,
   pi: ExtensionAPI,
   ctx: ExtensionContext,
 ): Promise<void> {
   if (!ctx.hasUI) {
-    ctx.ui.notify("/land requires interactive UI for now", "warning");
+    ctx.ui.notify("/settle requires interactive UI for now", "warning");
     return;
   }
 
   const repoRoot = await resolveRepoRoot(pi, ctx);
   if (!repoRoot) {
-    ctx.ui.notify("/land: not in a git repository", "error");
+    ctx.ui.notify("/settle: not in a git repository", "error");
     return;
   }
 
   const gh = await runCommand(pi, "gh", ["--version"], repoRoot);
   if (gh.code !== 0) {
-    ctx.ui.notify("/land: GitHub CLI (gh) is required", "error");
+    ctx.ui.notify("/settle: GitHub CLI (gh) is required", "error");
     return;
   }
 
-  ctx.ui.setStatus(LAND_STATUS_PREFIX, "Inspecting pull request...");
+  ctx.ui.setStatus(SETTLE_STATUS_PREFIX, "Inspecting pull request...");
   try {
     const tokens = args.trim().split(/\s+/).filter(Boolean);
     const dryRun = tokens.includes("--dry-run");
@@ -474,7 +474,7 @@ export async function runLandWorkflow(
     if (target) {
       const result = await readPullRequest(pi, repoRoot, target);
       if (!result.pr) {
-        ctx.ui.notify(`/land: failed to read PR ${target}: ${result.error}`, "error");
+        ctx.ui.notify(`/settle: failed to read PR ${target}: ${result.error}`, "error");
         return;
       }
       prs = [result.pr];
@@ -484,10 +484,10 @@ export async function runLandWorkflow(
     if (prs.length === 0) return;
 
     for (const pr of prs) {
-      if (!(await landPullRequest(pi, ctx, repoRoot, pr, dryRun))) break;
+      if (!(await settlePullRequest(pi, ctx, repoRoot, pr, dryRun))) break;
     }
   } finally {
-    ctx.ui.setStatus(LAND_STATUS_PREFIX, undefined);
+    ctx.ui.setStatus(SETTLE_STATUS_PREFIX, undefined);
   }
 }
 
@@ -502,5 +502,5 @@ export const __testing = {
   branchExists,
   cleanupLocalBranch,
   actionOptions,
-  landPullRequest,
+  settlePullRequest,
 };

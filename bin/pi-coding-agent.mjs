@@ -12,7 +12,7 @@ const bundledExtensions = [
   "extensions/session-workdir/index.ts",
   "extensions/slash-command-visibility/index.ts",
   "extensions/yeet/index.ts",
-  "extensions/land/index.ts",
+  "extensions/settle/index.ts",
 ];
 const extensionArgs = bundledExtensions.flatMap((extension) => [
   "--extension",
