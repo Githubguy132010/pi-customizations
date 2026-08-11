@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { __testing, runYeetWorkflow } from "../../extensions/shared/commands/yeet";
-import { registerLandWorkflow } from "../../extensions/shared/integrations/land";
+import { registerSettleWorkflow } from "../../extensions/shared/integrations/settle";
 import { createContext, createPi, createUi, result } from "../helpers";
 
 const root=mkdtempSync(join(tmpdir(),"yeet-cov-")); afterAll(()=>rmSync(root,{recursive:true,force:true}));
@@ -76,8 +76,8 @@ describe("remaining yeet decisions",()=>{
   x=await run({routes:{"gh pr create --title msg --body body":result("",1,"bad")}});expect(x.ui.notify).toHaveBeenCalledWith(expect.stringContaining("failed to create PR"),"error");
   x=await run({routes:{"gh pr create --title msg --body body":result("")}});expect(x.ui.notify).toHaveBeenCalledWith(expect.stringContaining("no URL returned"),"info");
  });
- it("invokes optional land integration",async()=>{
-  const x=setup({select:["Commit + push + create PR + land","Ready for review"]});const landing=vi.fn();registerLandWorkflow(x.pi,landing);await runYeetWorkflow("msg",x.pi,x.ctx);expect(landing).toHaveBeenCalledWith("url",x.ctx);
+ it("invokes optional settle integration",async()=>{
+  const x=setup({select:["Commit + push + create PR + settle","Ready for review"]});const settling=vi.fn();registerSettleWorkflow(x.pi,settling);await runYeetWorkflow("msg",x.pi,x.ctx);expect(settling).toHaveBeenCalledWith("url",x.ctx);
  });
  it("handles one and multiple templates including unreadable choices",async()=>{
   mkdirSync(join(root,".github"),{recursive:true});const one=join(root,".github","PULL_REQUEST_TEMPLATE.md");writeFileSync(one,"template");

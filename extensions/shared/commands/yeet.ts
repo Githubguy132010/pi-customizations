@@ -2,7 +2,7 @@ import { join, relative } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { runCommand, summarizeError } from "../utils/exec";
-import { resolveLandWorkflow } from "../integrations/land";
+import { resolveSettleWorkflow } from "../integrations/settle";
 import {
   collectGitRemotes,
   formatPrBody,
@@ -281,14 +281,14 @@ export async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: Exten
   const changed = getChangedFiles(status);
   const hasChanges = changed.length > 0;
 
-  const landWorkflow = resolveLandWorkflow(pi);
+  const settleWorkflow = resolveSettleWorkflow(pi);
   const workflows = [
     "Commit only",
     "Commit + push",
     "Commit + push + create PR",
   ];
-  if (landWorkflow) {
-    workflows.push("Commit + push + create PR + land");
+  if (settleWorkflow) {
+    workflows.push("Commit + push + create PR + settle");
   }
   const workflow = await ctx.ui.select("Select yeet workflow", workflows);
 
@@ -298,8 +298,8 @@ export async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: Exten
   }
 
   const doPush = workflow !== "Commit only";
-  const doPr = workflow === "Commit + push + create PR" || workflow === "Commit + push + create PR + land";
-  const doLand = workflow === "Commit + push + create PR + land";
+  const doPr = workflow === "Commit + push + create PR" || workflow === "Commit + push + create PR + settle";
+  const doSettle = workflow === "Commit + push + create PR + settle";
 
   let commitMessage = args.trim();
   if (hasChanges && !commitMessage) {
@@ -541,10 +541,10 @@ export async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: Exten
     }
     ctx.ui.notify(summary.join(" | "), "info");
 
-    if (doLand && createdPrUrl) {
-      await landWorkflow!(createdPrUrl, ctx);
+    if (doSettle && createdPrUrl) {
+      await settleWorkflow!(createdPrUrl, ctx);
     } else if (doPr) {
-      ctx.ui.notify("/yeet: run /land from this branch when the PR is ready", "info");
+      ctx.ui.notify("/yeet: run /settle from this branch when the PR is ready", "info");
     }
   } finally {
     ctx.ui.setStatus(YEET_STATUS_PREFIX, undefined);

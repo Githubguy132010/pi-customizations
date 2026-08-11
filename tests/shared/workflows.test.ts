@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { runLandWorkflow } from "../../extensions/shared/commands/land";
+import { runSettleWorkflow } from "../../extensions/shared/commands/settle";
 import { runYeetWorkflow } from "../../extensions/shared/commands/yeet";
 import { createContext, createPi, createUi, result } from "../helpers";
 
@@ -111,17 +111,17 @@ describe("/yeet workflow", () => {
   });
 });
 
-describe("/land workflow", () => {
+describe("/settle workflow", () => {
   const pr = { number: 12, title: "Ship it", state: "OPEN", isDraft: false, headRefName: "feature/x", baseRefName: "main", url: "https://github/pr/12", mergeable: "MERGEABLE", statusCheckRollup: [{ status: "COMPLETED", conclusion: "SUCCESS" }] };
 
   it("requires UI, a repository, and gh", async () => {
-    let ctx = createContext({ hasUI: false }); await runLandWorkflow("", createPi(), ctx);
-    expect(ctx.ui.notify).toHaveBeenCalledWith("/land requires interactive UI for now", "warning");
-    ctx = createContext(); await runLandWorkflow("", createPi({ exec: vi.fn().mockResolvedValue(result("", 1)) }), ctx);
-    expect(ctx.ui.notify).toHaveBeenCalledWith("/land: not in a git repository", "error");
+    let ctx = createContext({ hasUI: false }); await runSettleWorkflow("", createPi(), ctx);
+    expect(ctx.ui.notify).toHaveBeenCalledWith("/settle requires interactive UI for now", "warning");
+    ctx = createContext(); await runSettleWorkflow("", createPi({ exec: vi.fn().mockResolvedValue(result("", 1)) }), ctx);
+    expect(ctx.ui.notify).toHaveBeenCalledWith("/settle: not in a git repository", "error");
     ctx = createContext();
-    await runLandWorkflow("", createPi({ exec: dispatch({ "git rev-parse --show-toplevel": result("/repo"), "gh --version": result("", 1) }) }), ctx);
-    expect(ctx.ui.notify).toHaveBeenCalledWith("/land: GitHub CLI (gh) is required", "error");
+    await runSettleWorkflow("", createPi({ exec: dispatch({ "git rev-parse --show-toplevel": result("/repo"), "gh --version": result("", 1) }) }), ctx);
+    expect(ctx.ui.notify).toHaveBeenCalledWith("/settle: GitHub CLI (gh) is required", "error");
   });
 
   it("previews an explicit PR without making changes", async () => {
@@ -132,11 +132,11 @@ describe("/land workflow", () => {
     const select = vi.fn().mockResolvedValueOnce("Merge PR now").mockResolvedValueOnce("Squash");
     const confirm = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
     const ctx = createContext({ ui: createUi({ select, confirm }) });
-    await runLandWorkflow("12 --dry-run", createPi({ exec }), ctx);
-    expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("/land dry run; no changes made"), "info");
+    await runSettleWorkflow("12 --dry-run", createPi({ exec }), ctx);
+    expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("/settle dry run; no changes made"), "info");
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("1 passing, 0 failing, 0 pending"), "info");
     expect(exec).toHaveBeenCalledTimes(3);
-    expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("land", undefined);
+    expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("settle", undefined);
   });
 
   it("closes an open PR after confirmation", async () => {
@@ -151,9 +151,9 @@ describe("/land workflow", () => {
     const select = vi.fn().mockResolvedValue("Close PR without merging");
     const confirm = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
     const ctx = createContext({ ui: createUi({ select, confirm }) });
-    await runLandWorkflow("12", createPi({ exec }), ctx);
+    await runSettleWorkflow("12", createPi({ exec }), ctx);
     expect(exec).toHaveBeenCalledWith("gh", ["pr", "close", "https://github/pr/12"], { cwd: "/repo" });
-    expect(ctx.ui.notify).toHaveBeenCalledWith("/land: PR #12 closed", "info");
+    expect(ctx.ui.notify).toHaveBeenCalledWith("/settle: PR #12 closed", "info");
   });
 
   it("lists open PRs and handles no results", async () => {
@@ -163,20 +163,20 @@ describe("/land workflow", () => {
       [`gh pr view --json ${fields}`]: result("", 1, "no branch PR"),
       [`gh pr list --state open --limit 50 --json ${fields}`]: result("[]"),
     });
-    const ctx = createContext(); await runLandWorkflow("", createPi({ exec }), ctx);
+    const ctx = createContext(); await runSettleWorkflow("", createPi({ exec }), ctx);
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("no pull request is associated"), "warning");
-    expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("land", undefined);
+    expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("settle", undefined);
   });
 
   it("reports malformed or failed PR lookup and always clears status", async () => {
     for (const view of [result("not-json"), result("", 1, "not found")]) {
       const ctx = createContext();
-      await runLandWorkflow("99", createPi({ exec: dispatch({
+      await runSettleWorkflow("99", createPi({ exec: dispatch({
         "git rev-parse --show-toplevel": result("/repo"), "gh --version": result("gh"),
         "gh pr view 99 --json number,title,state,isDraft,headRefName,baseRefName,url,mergeable,mergeStateStatus,statusCheckRollup": view,
       }) }), ctx);
-      expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("/land: failed to read PR 99"), "error");
-      expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("land", undefined);
+      expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("/settle: failed to read PR 99"), "error");
+      expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("settle", undefined);
     }
   });
 });

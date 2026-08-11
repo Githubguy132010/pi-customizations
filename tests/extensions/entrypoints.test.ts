@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import bashOnly from "../../extensions/bash-only";
-import land from "../../extensions/land";
+import settle from "../../extensions/settle";
 import sessionWorkdir from "../../extensions/session-workdir";
 import slashVisibility from "../../extensions/slash-command-visibility";
 import yeet from "../../extensions/yeet";
@@ -21,17 +21,17 @@ describe("extension entrypoints", () => {
     expect(h.tool_call({ toolName: "read" })).toEqual({ block: true, terminate: true });
   });
 
-  it("land registers its command, integration, and status cleanup", async () => {
-    const pi = createPi(); land(pi);
-    expect(pi.registerCommand).toHaveBeenCalledWith("land", expect.objectContaining({ description: expect.any(String), handler: expect.any(Function) }));
+  it("settle registers its command, integration, and status cleanup", async () => {
+    const pi = createPi(); settle(pi);
+    expect(pi.registerCommand).toHaveBeenCalledWith("settle", expect.objectContaining({ description: expect.any(String), handler: expect.any(Function) }));
     const ctx = createContext();
     handlers(pi).session_shutdown({}, ctx);
-    expect(ctx.ui.setStatus).toHaveBeenCalledWith("land", undefined);
-    const request: any = {}; pi.events.emit("pi-customizations:land-workflow-request", request);
+    expect(ctx.ui.setStatus).toHaveBeenCalledWith("settle", undefined);
+    const request: any = {}; pi.events.emit("pi-customizations:settle-workflow-request", request);
     expect(request.workflow).toEqual(expect.any(Function));
     const noUi = createContext({ hasUI: false });
     await request.workflow("", noUi);
-    expect(noUi.ui.notify).toHaveBeenCalledWith("/land requires interactive UI for now", "warning");
+    expect(noUi.ui.notify).toHaveBeenCalledWith("/settle requires interactive UI for now", "warning");
     await pi.registerCommand.mock.calls[0][1].handler("", noUi);
   });
 
@@ -66,13 +66,13 @@ describe("slash command visibility", () => {
     const applyCompletion = vi.fn(() => ({ lines: ["done"], cursorLine: 0, cursorCol: 4 }));
     const current = {
       triggerCharacters: ["/"],
-      getSuggestions: vi.fn().mockResolvedValue({ prefix: "/", items: [{ value: "name" }, { value: "land" }, { value: "compact" }] }),
+      getSuggestions: vi.fn().mockResolvedValue({ prefix: "/", items: [{ value: "name" }, { value: "settle" }, { value: "compact" }] }),
       applyCompletion,
       shouldTriggerFileCompletion: vi.fn(() => false),
     };
     const provider = ctx.ui.addAutocompleteProvider.mock.calls[0][0](current);
-    await expect(provider.getSuggestions(["/"], 0, 1, {})).resolves.toEqual({ prefix: "/", items: [{ value: "land" }] });
-    expect(provider.applyCompletion([], 0, 0, { value: "land" }, "/")).toEqual({ lines: ["done"], cursorLine: 0, cursorCol: 4 });
+    await expect(provider.getSuggestions(["/"], 0, 1, {})).resolves.toEqual({ prefix: "/", items: [{ value: "settle" }] });
+    expect(provider.applyCompletion([], 0, 0, { value: "settle" }, "/")).toEqual({ lines: ["done"], cursorLine: 0, cursorCol: 4 });
     expect(provider.shouldTriggerFileCompletion([], 0, 0)).toBe(false);
   });
 

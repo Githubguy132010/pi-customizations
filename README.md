@@ -33,10 +33,10 @@ The standalone CLI always loads all five bundled customizations.
 | `extensions/session-workdir/index.ts` | Persists and restores each session's working directory. |
 | `extensions/slash-command-visibility/index.ts` | Hides selected built-in commands from slash autocomplete. |
 | `extensions/yeet/index.ts` | Adds `/yeet` for AI-assisted commits, pushes, and PR creation. |
-| `extensions/land/index.ts` | Adds `/land` for merging or closing PRs and cleaning up branches. |
+| `extensions/settle/index.ts` | Adds `/settle` for merging or closing PRs and cleaning up branches. |
 
-`/yeet` only offers its “create PR + land” workflow when the land extension is enabled.
-Disabling land therefore removes both `/land` and its integration with `/yeet`.
+`/yeet` only offers its “create PR + settle” workflow when the settle extension is enabled.
+Disabling settle therefore removes both `/settle` and its integration with `/yeet`.
 
 The slash-command visibility extension hides `/name`, `/tree`, `/fork`, `/clone`,
 `/compact`, `/trust`, `/export`, `/import`, `/share`, `/hotkeys`, `/changelog`, and
@@ -49,7 +49,7 @@ entrypoints and do not appear as separate toggles.
 
 - `/yeet` generates GPT-5.6 Luna commit messages, feature branch names, and PR
   descriptions, with interactive commit/push/PR automation.
-- `/land [PR-number-or-URL]` selects one or more open GitHub PRs, merges or closes
+- `/settle [PR-number-or-URL]` selects one or more open GitHub PRs, merges or closes
   them, and optionally deletes their local and remote branches. Add `--dry-run` to
   preview each selected plan.
 
