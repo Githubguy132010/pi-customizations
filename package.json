@@ -17,12 +17,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/githubguy132010/pi-customizations.git"
+    "url": "git+https://github.com/Githubguy132010/pi-customizations.git"
   },
   "bugs": {
-    "url": "https://github.com/githubguy132010/pi-customizations/issues"
+    "url": "https://github.com/Githubguy132010/pi-customizations/issues"
   },
-  "homepage": "https://github.com/githubguy132010/pi-customizations#readme",
+  "homepage": "https://github.com/Githubguy132010/pi-customizations#readme",
   "publishConfig": {
     "access": "public"
   },
