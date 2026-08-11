@@ -25,7 +25,6 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: "24.15.0"
-          registry-url: https://registry.npmjs.org
           package-manager-cache: false
 
       - name: Install trusted-publishing-capable npm
@@ -66,4 +65,4 @@ jobs:
 
       - name: Publish as latest
         if: steps.version.outputs.package_exists == 'true' && steps.version.outputs.exists == 'false'
-        run: npm publish --tag latest --access public --provenance
+        run: npm publish --tag latest --access public
