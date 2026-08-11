@@ -44,16 +44,6 @@ jobs:
           version="0.0.0-git.${GITHUB_SHA:0:12}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-          if ! npm view "${npm_package_name}" name --silent >/dev/null 2>&1; then
-            echo "package_exists=false" >> "$GITHUB_OUTPUT"
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::${npm_package_name} does not exist yet; publish the first build manually."
-            echo "## npm publish skipped" >> "$GITHUB_STEP_SUMMARY"
-            echo "Publish the first build manually, then configure npm Trusted Publishing and rerun this workflow." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
-          echo "package_exists=true" >> "$GITHUB_OUTPUT"
           if npm view "${npm_package_name}@${version}" version --silent >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "${npm_package_name}@${version} is already published."
@@ -65,5 +55,13 @@ jobs:
           npm_package_name: "@thatrandomnerd69/pi-coding-agent"
 
       - name: Publish as latest
-        if: steps.version.outputs.package_exists == 'true' && steps.version.outputs.exists == 'false'
-        run: npm publish --tag latest --access public --provenance
+        if: steps.version.outputs.exists == 'false'
+        shell: bash
+        run: |
+          publish_args=(--tag latest --access public)
+          if [[ "${{ github.event.repository.visibility }}" == "public" ]]; then
+            publish_args+=(--provenance)
+          else
+            echo "::notice::Skipping npm provenance because the source repository is not public."
+          fi
+          npm publish "${publish_args[@]}"

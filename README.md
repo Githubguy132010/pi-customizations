@@ -102,5 +102,7 @@ GitHub Actions Trusted Publisher with these exact values:
 
 The workflow in `.github/workflows/publish.yml` then tests and publishes every push to
 `main` as `0.0.0-git.<12-character-commit-hash>`. It uses GitHub OIDC instead of a stored
-npm token, publishes provenance, marks each new build as `latest`, and safely skips a
-commit that is already present on npm. It can also be rerun manually from GitHub Actions.
+npm token, marks each new build as `latest`, and safely skips a commit that is already
+present on npm. Public source repositories also publish npm provenance; the workflow
+omits provenance for private repositories because npm cannot generate a verifiable public
+attestation for them. It can also be rerun manually from GitHub Actions.
