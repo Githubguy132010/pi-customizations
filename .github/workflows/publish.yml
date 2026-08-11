@@ -27,12 +27,18 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: "24.15.0"
+          node-version: "24"
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
 
-      - name: Install trusted-publishing-capable npm
-        run: npm install --global npm@12.0.2
+      - name: Verify GitHub OIDC availability
+        shell: bash
+        run: |
+          if [[ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" || -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]]; then
+            echo "::error::GitHub OIDC environment is unavailable despite id-token: write."
+            exit 1
+          fi
+          echo "GitHub OIDC environment is available."
 
       - name: Install dependencies
         run: npm ci --ignore-scripts
