@@ -42,7 +42,8 @@ export class MacOSSandboxBackend implements SandboxBackend {
   async wrap(invocation: Invocation, paths: AgentPaths): Promise<Invocation> {
     if (!(await onPath("sandbox-exec"))) throw new Error("experimental macOS backend requires sandbox-exec");
     const quote = (s: string) => s.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
-    const profile = `(version 1)(deny default)(import \"system.sb\")(allow process*)(allow network*)(allow file-read* (subpath \"${quote(paths.repo)}\") (subpath \"${quote(paths.scratch)}\"))(allow file-write* (subpath \"${quote(paths.repo)}\") (subpath \"${quote(paths.scratch)}\"))`;
+    const runtimeRead = invocation.env.PI_EPHEMERAL_RUNTIME_ROOT ? ` (subpath \"${quote(invocation.env.PI_EPHEMERAL_RUNTIME_ROOT)}\")` : "";
+    const profile = `(version 1)(deny default)(import \"system.sb\")(allow process*)(allow network*)(allow file-read* (subpath \"${quote(paths.repo)}\") (subpath \"${quote(paths.scratch)}\")${runtimeRead})(allow file-write* (subpath \"${quote(paths.repo)}\") (subpath \"${quote(paths.scratch)}\"))`;
     return { command: "sandbox-exec", args: ["-p", profile, invocation.command, ...invocation.args], env: { ...invocation.env, HOME: paths.scratch, PI_EPHEMERAL_CHILD: "1" } };
   }
 }

@@ -7,6 +7,7 @@ import { execFile } from "node:child_process";
 import type { AgentMetadata, AgentPaths, AgentSnapshot, SpawnRequest } from "./types";
 import { ensureIgnored, findMetadata, pathsFor, preparePaths, readMetadata, removeEmptyParents, writeJsonAtomic, writeMetadata } from "./storage";
 import { platformBackend, type Invocation, type SandboxBackend } from "./sandbox";
+import { stageDevelopmentRuntime } from "./runtime";
 
 const execFileAsync = promisify(execFile);
 const terminal = new Set(["completed", "failed", "timed_out", "cancelled"]);
@@ -20,6 +21,7 @@ export class EphemeralAgentManager {
   private readonly live = new Map<string, LiveAgent>();
   private readonly pending: Array<() => void> = [];
   private active = 0;
+  private developmentInvocation?: Promise<Invocation>;
   private readonly concurrency: number;
   constructor(private readonly options: ManagerOptions) {
     this.sessionId = options.sessionId ?? randomUUID();
@@ -55,7 +57,7 @@ export class EphemeralAgentManager {
       // Resolve this before the child starts. Never rediscover Git metadata from
       // the child-controlled worktree after it has run.
       const trustedGitDir = (await execFileAsync("git", ["rev-parse", "--absolute-git-dir"], { cwd: paths.repo })).stdout.trim();
-      const base = this.options.invocation?.() ?? await defaultInvocation(this.options.repoRoot);
+      const base = this.options.invocation?.() ?? await (this.developmentInvocation ??= defaultInvocation(this.options.repoRoot, process.argv[1], process.execPath, join(this.agentsRoot, this.sessionId, "runtime")));
       const invocation = await (this.options.backend ?? platformBackend()).wrap(base, paths);
       const child = spawn(invocation.command, invocation.args, { cwd: paths.repo, env: { ...invocation.env, PI_EPHEMERAL_PATHS: JSON.stringify(paths) }, stdio: ["pipe", "pipe", "pipe"], detached: true });
       metadata.pid = child.pid; metadata.updatedAt = new Date().toISOString(); await writeMetadata(paths, metadata);
@@ -198,6 +200,7 @@ export class EphemeralAgentManager {
       }
       await execFileAsync("git", ["worktree", "prune"], { cwd: this.options.repoRoot });
       await rm(paths.root, { recursive: true, force: true }); await removeEmptyParents(paths, this.agentsRoot);
+      await this.removeSessionRuntimeIfUnused(sessionId);
     } catch (error) {
       metadata.state = "failed"; metadata.error = `cleanup failed after retries: ${error instanceof Error ? error.message : String(error)}`; metadata.updatedAt = new Date().toISOString();
       await writeMetadata(paths, metadata); throw error;
@@ -206,6 +209,15 @@ export class EphemeralAgentManager {
 
   private async gitCommonDir(): Promise<string> { const out = (await execFileAsync("git", ["rev-parse", "--git-common-dir"], { cwd: this.options.repoRoot })).stdout.trim(); return out.startsWith("/") ? out : join(this.options.repoRoot, out); }
   private async retry(operation: () => Promise<void>): Promise<void> { let last: unknown; for (let attempt = 0; attempt < 3; attempt++) { try { await operation(); return; } catch (error) { last = error; if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1))); } } throw last; }
+  private async removeSessionRuntimeIfUnused(sessionId: string): Promise<void> {
+    const sessionRoot = join(this.agentsRoot, sessionId);
+    if ((await findMetadata(sessionRoot)).length === 0) {
+      await rm(join(sessionRoot, "runtime"), { recursive: true, force: true });
+      if (sessionId === this.sessionId) this.developmentInvocation = undefined;
+    }
+    const dummy = pathsFor(this.options.repoRoot, sessionId, "unused");
+    await removeEmptyParents(dummy, this.agentsRoot);
+  }
   async recover(): Promise<void> {
     for (const file of await findMetadata(this.agentsRoot)) {
       try {
@@ -234,12 +246,19 @@ export class EphemeralAgentManager {
         }
       } catch { /* preserve corrupt workspace for manual recovery */ }
     }
+    // No recovered child is alive, so session runtimes from prior parent
+    // processes are unnecessary. Remove only the precisely named artifacts.
+    try {
+      for (const session of await (await import("node:fs/promises")).readdir(this.agentsRoot)) {
+        await rm(join(this.agentsRoot, session, "runtime"), { recursive: true, force: true });
+      }
+    } catch { /* agents root may not exist yet */ }
   }
   private nudge(metadata: AgentMetadata): void { try { this.options.onNudge?.(metadata); } catch { /* notifications are best-effort */ } }
 }
 
 const CHILD_ENV_KEYS = ["PATH", "LANG", "LC_ALL", "TZ", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY", "AZURE_OPENAI_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_REGION", "AWS_DEFAULT_REGION"] as const;
-export async function defaultInvocation(repoRoot: string, script = process.argv[1], executable = process.execPath): Promise<Invocation> {
+export async function defaultInvocation(repoRoot: string, script = process.argv[1], executable = process.execPath, stagedRuntime?: string): Promise<Invocation> {
   if (!script) throw new Error("cannot locate the pi-coding-agent executable");
   const [canonicalScript, canonicalExecutable, canonicalRepo] = await Promise.all([
     realpath(script),
@@ -248,7 +267,9 @@ export async function defaultInvocation(repoRoot: string, script = process.argv[
   ]);
   const scriptRelativeToRepo = relative(canonicalRepo, canonicalScript);
   if (scriptRelativeToRepo === "" || (!scriptRelativeToRepo.startsWith("..") && !isAbsolute(scriptRelativeToRepo))) {
-    throw new Error(`secure subagents cannot launch the development pi-coding-agent entrypoint at ${canonicalScript}; install pi-coding-agent outside the repository checkout (for example with npm or mise) and launch that installation`);
+    const destination = stagedRuntime ?? join(canonicalRepo, ".pi-agents", "runtime");
+    const runtimeRoot = await stageDevelopmentRuntime(canonicalRepo, destination);
+    return { command: canonicalExecutable, args: [join(runtimeRoot, "bin", "pi-coding-agent.mjs"), "--mode", "rpc", "--no-session"], env: childEnvironment(runtimeRoot) };
   }
   const runtimeRoot = dirname(dirname(canonicalScript));
   return { command: canonicalExecutable, args: [canonicalScript, "--mode", "rpc", "--no-session"], env: childEnvironment(runtimeRoot) };

@@ -23,6 +23,7 @@ describe("ephemeral sandbox contract", () => {
     expect(wrapped.args.join(" ")).toContain(`--bind ${paths.repo} ${paths.repo}`);
     expect(wrapped.args.join(" ")).toContain(`--bind ${paths.scratch} ${paths.scratch}`);
     expect(wrapped.args.join(" ")).not.toContain("--bind /parent /parent");
+    expect(wrapped.args.join(" ")).toContain(`--ro-bind ${packageRoot} ${packageRoot}`);
     expect(wrapped.args).not.toContain("--ro-bind-try");
   });
 

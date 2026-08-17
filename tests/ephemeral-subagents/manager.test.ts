@@ -25,16 +25,36 @@ async function repository(): Promise<string> {
 }
 
 describe("ephemeral agent manager", () => {
-  it("rejects a symlink chain resolving to a development entrypoint", async () => {
+  it("stages a symlink chain resolving to a development entrypoint without exposing unrelated files", async () => {
     const repoRoot = await repository();
     const script = join(repoRoot, "bin", "pi-coding-agent.mjs");
     const links = await mkdtemp(join(tmpdir(), "pi-links-")); roots.push(links);
     await mkdir(join(repoRoot, "bin"));
-    await writeFile(script, "#!/usr/bin/env node\n");
+    await mkdir(join(repoRoot, "extensions"));
+    await writeFile(script, "#!/usr/bin/env node\nconsole.log('staged');\n");
+    await writeFile(join(repoRoot, "extensions", "changed.ts"), "export const uncommitted = true;\n");
+    await writeFile(join(repoRoot, "secret.env"), "TOKEN=secret\n");
+    await writeFile(join(repoRoot, "package.json"), JSON.stringify({ dependencies: {} }));
     await symlink(script, join(links, "first"));
     await symlink(join(links, "first"), join(links, "pi-coding-agent"));
 
-    await expect(defaultInvocation(repoRoot, join(links, "pi-coding-agent"))).rejects.toThrow(/development pi-coding-agent entrypoint.*install pi-coding-agent outside/s);
+    const staged = join(repoRoot, ".pi-agents", "session", "runtime");
+    const invocation = await defaultInvocation(repoRoot, join(links, "pi-coding-agent"), process.execPath, staged);
+    expect(invocation.args[0]).toBe(join(staged, "bin", "pi-coding-agent.mjs"));
+    expect(execFileSync(invocation.command, [invocation.args[0]!], { encoding: "utf8" })).toContain("staged");
+    expect(await readFile(join(staged, "extensions", "changed.ts"), "utf8")).toContain("uncommitted");
+    await expect(access(join(staged, "secret.env"))).rejects.toThrow();
+  });
+
+  it("fails closed when a required development source symlink escapes the checkout", async () => {
+    const repoRoot = await repository();
+    const outside = await mkdtemp(join(tmpdir(), "pi-outside-")); roots.push(outside);
+    await mkdir(join(repoRoot, "bin")); await mkdir(join(repoRoot, "extensions"));
+    await writeFile(join(repoRoot, "bin", "pi-coding-agent.mjs"), "#!/usr/bin/env node\n");
+    await writeFile(join(repoRoot, "package.json"), JSON.stringify({ dependencies: {} }));
+    await writeFile(join(outside, "secret.ts"), "secret");
+    await symlink(join(outside, "secret.ts"), join(repoRoot, "extensions", "escape.ts"));
+    await expect(defaultInvocation(repoRoot, join(repoRoot, "bin", "pi-coding-agent.mjs"), process.execPath, join(repoRoot, ".pi-agents", "runtime"))).rejects.toThrow(/escapes its approved source.*install pi-coding-agent outside/s);
   });
 
   it("canonicalizes a symlinked external installation for sandbox mounting and invocation", async () => {
