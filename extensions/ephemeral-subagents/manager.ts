@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { access, appendFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, appendFile, lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
@@ -186,9 +186,9 @@ export class EphemeralAgentManager {
           // remove it, so remove only this already-archived agent repo and let
           // `worktree prune` discard the trusted administrative entry.
           let gitFileIntact = false;
-          try { gitFileIntact = (await stat(join(paths.repo, ".git"))).isFile(); } catch { /* missing/replaced */ }
+          try { gitFileIntact = (await lstat(join(paths.repo, ".git"))).isFile(); } catch { /* missing/replaced */ }
           if (gitFileIntact) throw removeError;
-          await rm(paths.repo, { recursive: true, force: true });
+          await this.retry(async () => { await rm(paths.repo, { recursive: true, force: true }); });
         }
       }
       await execFileAsync("git", ["worktree", "prune"], { cwd: this.options.repoRoot });
@@ -213,17 +213,24 @@ export class EphemeralAgentManager {
             m.state = "failed";
             m.error = `startup cleanup recovery failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`;
             m.updatedAt = new Date().toISOString();
-            try { await writeMetadata(paths, m); } catch { /* preserve workspace and archived result for manual recovery */ }
+            try { await writeMetadata(paths, m); } catch (persistError) {
+              m.error += `; could not persist recovery state: ${persistError instanceof Error ? persistError.message : String(persistError)}`;
+              this.nudge(m);
+            }
           }
           continue;
         }
         if (!terminal.has(m.state)) {
           m.state = "failed"; m.error = "recovered after parent process exited"; m.updatedAt = new Date().toISOString();
-          try { await writeMetadata(paths, m); } catch { /* preserve workspace and prior lifecycle record for manual recovery */ }
+          try { await writeMetadata(paths, m); } catch (persistError) {
+            m.error += `; could not persist recovery state: ${persistError instanceof Error ? persistError.message : String(persistError)}`;
+            this.nudge(m);
+          }
         }
       } catch { /* preserve corrupt workspace for manual recovery */ }
     }
   }
+  private nudge(metadata: AgentMetadata): void { try { this.options.onNudge?.(metadata); } catch { /* notifications are best-effort */ } }
 }
 
 const CHILD_ENV_KEYS = ["PATH", "LANG", "LC_ALL", "TZ", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY", "AZURE_OPENAI_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_REGION", "AWS_DEFAULT_REGION"] as const;

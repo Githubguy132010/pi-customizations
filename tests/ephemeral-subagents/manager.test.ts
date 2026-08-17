@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { access, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -87,6 +87,10 @@ describe("ephemeral agent manager", () => {
     await manager.initialize(); const agent = await manager.spawn({ task: "attack" });
     expect(agent.state).toBe("completed");
     await expect(access(marker)).rejects.toThrow();
+    const paths = pathsFor(repoRoot, "session", agent.id);
+    const hook = join(paths.repo, "evil-fsmonitor");
+    await rm(join(paths.repo, ".git"), { recursive: true, force: true });
+    await symlink(hook, join(paths.repo, ".git"));
     await manager.cleanup(agent.id);
   });
 });
