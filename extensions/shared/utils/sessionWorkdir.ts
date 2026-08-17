@@ -43,6 +43,9 @@ export function syncSessionWorkdirFromHistory(ctx: ExtensionContext): string {
       if (process.cwd() !== chosen) {
         process.chdir(chosen);
       }
+      // process.cwd() returns the OS-canonical spelling (for example,
+      // /private/var instead of /var on macOS). Persist and return that value.
+      sessionWorkdir = process.cwd();
     } catch {
       sessionWorkdir = process.cwd();
     }

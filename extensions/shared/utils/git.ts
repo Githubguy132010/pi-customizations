@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionContext, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -80,7 +80,17 @@ export function findPullRequestTemplates(repoRoot: string): string[] {
     join(repoRoot, ".github", "PULL_REQUEST_TEMPLATE", "PULL_REQUEST_TEMPLATE.md"),
   ];
 
-  const templates = candidates.filter((candidate) => existsSync(candidate));
+  const templates: string[] = [];
+  const seen = new Set<string>();
+  const addTemplate = (candidate: string) => {
+    if (!existsSync(candidate)) return;
+    const identity = realpathSync(candidate);
+    if (seen.has(identity)) return;
+    seen.add(identity);
+    templates.push(candidate);
+  };
+
+  candidates.forEach(addTemplate);
 
   const templateDir = join(repoRoot, ".github", "PULL_REQUEST_TEMPLATE");
   if (existsSync(templateDir) && statSync(templateDir).isDirectory()) {
@@ -93,9 +103,7 @@ export function findPullRequestTemplates(repoRoot: string): string[] {
       }
 
       const candidate = join(templateDir, entry.name);
-      if (!templates.includes(candidate)) {
-        templates.push(candidate);
-      }
+      addTemplate(candidate);
     }
   }
 

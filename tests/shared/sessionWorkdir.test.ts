@@ -11,6 +11,7 @@ import { createContext, createPi } from "../helpers";
 
 const originalCwd = process.cwd();
 const root = mkdtempSync(join(tmpdir(), "pi-session-test-"));
+const canonicalRoot = (() => { const before = process.cwd(); process.chdir(root); const resolved = process.cwd(); process.chdir(before); return resolved; })();
 afterAll(() => { process.chdir(originalCwd); rmSync(root, { recursive: true, force: true }); });
 
 function context(entries: unknown[], header = originalCwd) {
@@ -33,15 +34,15 @@ describe("session working directory", () => {
       { type: "custom", customType: WORKDIR_ENTRY_TYPE, data: { cwd: ` ${root} ` } },
       null,
     ];
-    expect(syncSessionWorkdirFromHistory(context(entries))).toBe(root);
-    expect(process.cwd()).toBe(root);
-    expect(getSessionWorkdir()).toBe(root);
+    expect(syncSessionWorkdirFromHistory(context(entries))).toBe(canonicalRoot);
+    expect(process.cwd()).toBe(canonicalRoot);
+    expect(getSessionWorkdir()).toBe(canonicalRoot);
   });
 
   it("falls back from blank/missing entries to header, then current cwd", () => {
     process.chdir(originalCwd);
-    expect(syncSessionWorkdirFromHistory(context([{ type: "custom", customType: WORKDIR_ENTRY_TYPE, data: { cwd: " " } }], root))).toBe(root);
-    expect(syncSessionWorkdirFromHistory(context([], "/definitely/missing"))).toBe(root);
+    expect(syncSessionWorkdirFromHistory(context([{ type: "custom", customType: WORKDIR_ENTRY_TYPE, data: { cwd: " " } }], root))).toBe(canonicalRoot);
+    expect(syncSessionWorkdirFromHistory(context([], "/definitely/missing"))).toBe(canonicalRoot);
   });
 
   it("recovers if changing to a saved directory fails", () => {
@@ -55,7 +56,7 @@ describe("session working directory", () => {
     syncSessionWorkdirFromHistory(context([], root));
     const pi = createPi();
     persistSessionWorkdir(pi, "reload");
-    expect(pi.appendEntry).toHaveBeenCalledWith(WORKDIR_ENTRY_TYPE, expect.objectContaining({ cwd: root, reason: "reload", timestamp: expect.any(String) }));
+    expect(pi.appendEntry).toHaveBeenCalledWith(WORKDIR_ENTRY_TYPE, expect.objectContaining({ cwd: canonicalRoot, reason: "reload", timestamp: expect.any(String) }));
     expect(new Date(pi.appendEntry.mock.calls[0][1].timestamp).toString()).not.toBe("Invalid Date");
   });
 
