@@ -41,7 +41,11 @@ export class MacOSSandboxBackend implements SandboxBackend {
   readonly name = "sandbox-exec-experimental";
   async wrap(invocation: Invocation, paths: AgentPaths): Promise<Invocation> {
     if (!(await onPath("sandbox-exec"))) throw new Error("experimental macOS backend requires sandbox-exec");
-    const quote = (s: string) => s.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+    const quote = (s: string) => {
+      if (/[\u0000-\u001f\u007f]/u.test(s)) throw new Error("macOS sandbox paths must not contain control characters");
+      // Parentheses have no syntactic meaning inside an SBPL string literal.
+      return s.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+    };
     const runtimeRead = invocation.env.PI_EPHEMERAL_RUNTIME_ROOT ? ` (subpath \"${quote(invocation.env.PI_EPHEMERAL_RUNTIME_ROOT)}\")` : "";
     const profile = `(version 1)(deny default)(import \"system.sb\")(allow process*)(allow network*)(allow file-read* (subpath \"${quote(paths.repo)}\") (subpath \"${quote(paths.scratch)}\")${runtimeRead})(allow file-write* (subpath \"${quote(paths.repo)}\") (subpath \"${quote(paths.scratch)}\"))`;
     return { command: "sandbox-exec", args: ["-p", profile, invocation.command, ...invocation.args], env: { ...invocation.env, HOME: paths.scratch, PI_EPHEMERAL_CHILD: "1" } };

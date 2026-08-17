@@ -36,8 +36,8 @@ export async function readMetadata(paths: AgentPaths): Promise<AgentMetadata> {
   return JSON.parse(await readFile(paths.metadata, "utf8")) as AgentMetadata;
 }
 
-export async function removeEmptyParents(paths: AgentPaths, agentsRoot: string): Promise<void> {
-  let current = dirname(paths.root);
+export async function removeEmptyParents(start: string, agentsRoot: string): Promise<void> {
+  let current = start;
   while (current.startsWith(agentsRoot)) {
     try { await rm(current, { recursive: false }); } catch { break; }
     if (current === agentsRoot) break;

@@ -40,7 +40,7 @@ describe("ephemeral agent manager", () => {
 
     const staged = join(repoRoot, ".pi-agents", "session", "runtime");
     const invocation = await defaultInvocation(repoRoot, join(links, "pi-coding-agent"), process.execPath, staged);
-    expect(invocation.args[0]).toBe(join(staged, "bin", "pi-coding-agent.mjs"));
+    expect(invocation.args[0]).toBe(join(await realpath(staged), "bin", "pi-coding-agent.mjs"));
     expect(execFileSync(invocation.command, [invocation.args[0]!], { encoding: "utf8" })).toContain("staged");
     expect(await readFile(join(staged, "extensions", "changed.ts"), "utf8")).toContain("uncommitted");
     await expect(access(join(staged, "secret.env"))).rejects.toThrow();
@@ -67,8 +67,8 @@ describe("ephemeral agent manager", () => {
     await symlink(script, join(links, "pi-coding-agent"));
 
     const invocation = await defaultInvocation(repoRoot, join(links, "pi-coding-agent"));
-    expect(invocation.args[0]).toBe(script);
-    expect(invocation.env.PI_EPHEMERAL_RUNTIME_ROOT).toBe(installation);
+    expect(invocation.args[0]).toBe(await realpath(script));
+    expect(invocation.env.PI_EPHEMERAL_RUNTIME_ROOT).toBe(await realpath(installation));
     expect(invocation.command).toBe(await realpath(process.execPath));
   });
 
@@ -87,6 +87,19 @@ describe("ephemeral agent manager", () => {
     expect((await manager.status(agent.id)).error).toBe(agent.error);
     const transcript = await readFile(pathsFor(repoRoot, "session", agent.id).transcript, "utf8");
     expect(transcript).toContain("x".repeat(20_000));
+    await manager.cleanup(agent.id);
+  });
+
+  it("includes child stderr in timeout errors", async () => {
+    const repoRoot = await repository();
+    const invocation = (): Invocation => ({ command: process.execPath, args: ["-e", "process.stderr.write('request stalled'); setInterval(() => {}, 1000)"], env: { PATH: process.env.PATH } });
+    const manager = new EphemeralAgentManager({ repoRoot, sessionId: "session", backend: passthrough, invocation });
+    await manager.initialize();
+
+    const agent = await manager.spawn({ task: "time out", timeoutMs: 500 });
+    expect(agent.state).toBe("timed_out");
+    expect(agent.error).toContain("timed out after 500ms");
+    expect(agent.error).toContain("request stalled");
     await manager.cleanup(agent.id);
   });
 

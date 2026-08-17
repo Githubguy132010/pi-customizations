@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { access, appendFile, lstat, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { access, appendFile, lstat, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
@@ -57,7 +57,7 @@ export class EphemeralAgentManager {
       // Resolve this before the child starts. Never rediscover Git metadata from
       // the child-controlled worktree after it has run.
       const trustedGitDir = (await execFileAsync("git", ["rev-parse", "--absolute-git-dir"], { cwd: paths.repo })).stdout.trim();
-      const base = this.options.invocation?.() ?? await (this.developmentInvocation ??= defaultInvocation(this.options.repoRoot, process.argv[1], process.execPath, join(this.agentsRoot, this.sessionId, "runtime")));
+      const base = this.options.invocation?.() ?? await this.getDevelopmentInvocation();
       const invocation = await (this.options.backend ?? platformBackend()).wrap(base, paths);
       const child = spawn(invocation.command, invocation.args, { cwd: paths.repo, env: { ...invocation.env, PI_EPHEMERAL_PATHS: JSON.stringify(paths) }, stdio: ["pipe", "pipe", "pipe"], detached: true });
       metadata.pid = child.pid; metadata.updatedAt = new Date().toISOString(); await writeMetadata(paths, metadata);
@@ -68,7 +68,9 @@ export class EphemeralAgentManager {
       child.stdout.on("data", (data) => void this.consume(live, data.toString()));
       child.stderr.on("data", (data) => {
         const text = data.toString();
-        live.transcriptWrites = live.transcriptWrites.then(() => appendFile(paths.transcript, JSON.stringify({ type: "stderr", text }) + "\n"));
+        live.transcriptWrites = live.transcriptWrites
+          .then(() => appendFile(paths.transcript, JSON.stringify({ type: "stderr", text }) + "\n"))
+          .catch(() => undefined);
         const available = MAX_STARTUP_ERROR_LENGTH - live.stderrBuffer.length;
         if (available > 0) live.stderrBuffer += text.slice(0, available);
         if (text.length > available) live.stderrTruncated = true;
@@ -91,6 +93,17 @@ export class EphemeralAgentManager {
     }
   }
 
+  private getDevelopmentInvocation(): Promise<Invocation> {
+    if (this.developmentInvocation) return this.developmentInvocation;
+    const pending = defaultInvocation(this.options.repoRoot, process.argv[1], process.execPath, join(this.agentsRoot, this.sessionId, "runtime"));
+    const cached = pending.catch((error) => {
+      if (this.developmentInvocation === cached) this.developmentInvocation = undefined;
+      throw error;
+    });
+    this.developmentInvocation = cached;
+    return cached;
+  }
+
   private async checkRequest(live: LiveAgent): Promise<void> {
     if (live.metadata.state === "waiting_for_input" || terminal.has(live.metadata.state)) return;
     try {
@@ -102,8 +115,9 @@ export class EphemeralAgentManager {
   }
 
   private async consume(live: LiveAgent, chunk: string): Promise<void> {
-    live.transcriptWrites = live.transcriptWrites.then(() => appendFile(live.paths.transcript, chunk));
-    await live.transcriptWrites;
+    live.transcriptWrites = live.transcriptWrites
+      .then(() => appendFile(live.paths.transcript, chunk))
+      .catch(() => undefined);
     live.outputBuffer += chunk;
     const lines = live.outputBuffer.split("\n");
     live.outputBuffer = lines.pop() ?? "";
@@ -122,10 +136,10 @@ export class EphemeralAgentManager {
     if (live.requestTimer) clearInterval(live.requestTimer);
     await live.transcriptWrites.catch(() => undefined);
     const stderr = live.stderrBuffer.trim();
-    const childError = state === "failed" && !live.metadata.result && stderr
-      ? `child process failed${exitCode === undefined ? "" : ` with exit code ${exitCode}`}: ${stderr}${live.stderrTruncated ? "\n[stderr truncated; see transcript for full output]" : ""}`
+    const childError = state !== "completed" && !live.metadata.result && stderr
+      ? `child process ${state === "failed" ? "failed" : state}${exitCode === undefined ? "" : ` with exit code ${exitCode}`}: ${stderr}${live.stderrTruncated ? "\n[stderr truncated; see transcript for full output]" : ""}`
       : undefined;
-    live.metadata.state = state; live.metadata.exitCode = exitCode; live.metadata.error = error ?? childError; live.metadata.updatedAt = new Date().toISOString();
+    live.metadata.state = state; live.metadata.exitCode = exitCode; live.metadata.error = error && childError ? `${error}\n${childError}` : error ?? childError; live.metadata.updatedAt = new Date().toISOString();
     try { live.metadata.changeSummary = await this.safeChangeSummary(live); } catch { /* keep result */ }
     try {
       await writeMetadata(live.paths, live.metadata);
@@ -199,7 +213,7 @@ export class EphemeralAgentManager {
         }
       }
       await execFileAsync("git", ["worktree", "prune"], { cwd: this.options.repoRoot });
-      await rm(paths.root, { recursive: true, force: true }); await removeEmptyParents(paths, this.agentsRoot);
+      await rm(paths.root, { recursive: true, force: true }); await removeEmptyParents(dirname(paths.root), this.agentsRoot);
       await this.removeSessionRuntimeIfUnused(sessionId);
     } catch (error) {
       metadata.state = "failed"; metadata.error = `cleanup failed after retries: ${error instanceof Error ? error.message : String(error)}`; metadata.updatedAt = new Date().toISOString();
@@ -215,8 +229,7 @@ export class EphemeralAgentManager {
       await rm(join(sessionRoot, "runtime"), { recursive: true, force: true });
       if (sessionId === this.sessionId) this.developmentInvocation = undefined;
     }
-    const dummy = pathsFor(this.options.repoRoot, sessionId, "unused");
-    await removeEmptyParents(dummy, this.agentsRoot);
+    await removeEmptyParents(sessionRoot, this.agentsRoot);
   }
   async recover(): Promise<void> {
     for (const file of await findMetadata(this.agentsRoot)) {
@@ -249,7 +262,7 @@ export class EphemeralAgentManager {
     // No recovered child is alive, so session runtimes from prior parent
     // processes are unnecessary. Remove only the precisely named artifacts.
     try {
-      for (const session of await (await import("node:fs/promises")).readdir(this.agentsRoot)) {
+      for (const session of await readdir(this.agentsRoot)) {
         await rm(join(this.agentsRoot, session, "runtime"), { recursive: true, force: true });
       }
     } catch { /* agents root may not exist yet */ }

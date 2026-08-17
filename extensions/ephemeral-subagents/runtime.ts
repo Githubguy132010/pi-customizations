@@ -1,4 +1,5 @@
 import { lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { dirname, isAbsolute, join, relative } from "node:path";
 
 function inside(root: string, file: string): boolean {
@@ -46,6 +47,9 @@ async function stagePackage(source: string, destination: string, topNodeModules:
     if (entry !== "node_modules") await copyApproved(join(canonical, entry), join(destination, entry), canonical);
   }
   const manifest = JSON.parse(await readFile(join(canonical, "package.json"), "utf8")) as { dependencies?: Record<string, string>; optionalDependencies?: Record<string, string> };
+  for (const name of Object.keys(manifest.dependencies ?? {})) {
+    if (Object.hasOwn(manifest.optionalDependencies ?? {}, name)) throw new Error(`dependency ${name} is declared as both required and optional`);
+  }
   const dependencies = { ...manifest.dependencies, ...manifest.optionalDependencies };
   for (const name of Object.keys(dependencies).sort()) {
     let dependency: string;
@@ -64,7 +68,7 @@ async function stagePackage(source: string, destination: string, topNodeModules:
 export async function stageDevelopmentRuntime(repoRoot: string, destination: string): Promise<string> {
   const canonicalRepo = await realpath(repoRoot);
   const manifest = JSON.parse(await readFile(join(canonicalRepo, "package.json"), "utf8")) as { dependencies?: Record<string, string> };
-  const temporary = `${destination}.tmp-${process.pid}`;
+  const temporary = `${destination}.tmp-${process.pid}-${randomUUID()}`;
   await rm(temporary, { recursive: true, force: true });
   try {
     await mkdir(temporary, { recursive: true, mode: 0o700 });

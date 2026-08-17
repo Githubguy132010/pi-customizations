@@ -33,5 +33,10 @@ describe("ephemeral sandbox contract", () => {
     expect(wrapped.command).toBe("sandbox-exec"); expect(wrapped.args[1]).toContain("(deny default)"); expect(wrapped.args[1]).toContain(paths.scratch);
   });
 
+  it("rejects control characters in macOS sandbox paths", async () => {
+    await fakeCommand("sandbox-exec"); const paths = pathsFor("/parent\n(allow default)", "session", "agent");
+    await expect(new MacOSSandboxBackend().wrap({ command: "/usr/bin/node", args: [], env: {} }, paths)).rejects.toThrow(/control characters/);
+  });
+
   it("rejects native Windows", () => expect(() => platformBackend("win32")).toThrow(/WSL/));
 });
