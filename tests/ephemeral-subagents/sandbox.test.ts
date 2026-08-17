@@ -16,12 +16,14 @@ async function fakeCommand(name: string): Promise<void> {
 describe("ephemeral sandbox contract", () => {
   it("uses bubblewrap with only the agent repo and scratch writable", async () => {
     await fakeCommand("bwrap"); const paths = pathsFor("/parent", "session", "agent");
-    const wrapped = await new LinuxBubblewrapBackend().wrap({ command: "/usr/bin/node", args: ["/opt/pi/bin/pi.mjs"], env: { PI_EPHEMERAL_RUNTIME_ROOT: "/opt/pi" } }, paths);
+    const packageRoot = await mkdtemp(join(tmpdir(), "pi-runtime-"));
+    const wrapped = await new LinuxBubblewrapBackend().wrap({ command: process.execPath, args: [join(packageRoot, "bin/pi.mjs")], env: { PI_EPHEMERAL_RUNTIME_ROOT: packageRoot } }, paths);
     expect(wrapped.command).toBe("bwrap");
     expect(wrapped.args).toContain("--new-session");
     expect(wrapped.args.join(" ")).toContain(`--bind ${paths.repo} ${paths.repo}`);
     expect(wrapped.args.join(" ")).toContain(`--bind ${paths.scratch} ${paths.scratch}`);
     expect(wrapped.args.join(" ")).not.toContain("--bind /parent /parent");
+    expect(wrapped.args).not.toContain("--ro-bind-try");
   });
 
   it("keeps the experimental macOS implementation behind the same interface", async () => {

@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { access } from "node:fs/promises";
 import { delimiter, dirname, join } from "node:path";
 import type { AgentPaths } from "./types";
@@ -15,12 +16,22 @@ export class LinuxBubblewrapBackend implements SandboxBackend {
   async wrap(invocation: Invocation, paths: AgentPaths): Promise<Invocation> {
     if (!(await onPath("bwrap"))) throw new Error("bubblewrap is required for ephemeral subagents on Linux/WSL");
     const runtime = dirname(invocation.command);
+    if (!existsSync(invocation.command)) throw new Error(`ephemeral sandbox runtime does not exist: ${invocation.command}`);
     const args = ["--die-with-parent", "--new-session", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"];
-    for (const system of ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"]) args.push("--ro-bind-try", system, system);
-    // The executable may be in /opt or another installation prefix.
-    if (!["/usr", "/bin", "/sbin", "/lib", "/lib64"].some((p) => invocation.command.startsWith(`${p}/`))) args.push("--ro-bind", runtime, runtime);
+    const systemMounts = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"].filter(existsSync);
+    if (!systemMounts.some((path) => path === "/usr" || path === "/bin")) throw new Error("ephemeral sandbox cannot find /usr or /bin; this Linux layout is not supported");
+    for (const system of systemMounts) args.push("--ro-bind", system, system);
+    // Mount the complete installation prefix for non-system runtimes so sibling
+    // lib/ directories and loader assets are available, not just bin/node.
+    if (!["/usr", "/bin", "/sbin", "/lib", "/lib64"].some((p) => invocation.command.startsWith(`${p}/`))) {
+      const runtimePrefix = dirname(runtime);
+      args.push("--ro-bind", runtimePrefix, runtimePrefix);
+    }
     const packageRoot = invocation.env.PI_EPHEMERAL_RUNTIME_ROOT;
-    if (packageRoot) args.push("--ro-bind", packageRoot, packageRoot);
+    if (packageRoot) {
+      if (!existsSync(packageRoot)) throw new Error(`ephemeral sandbox package runtime does not exist: ${packageRoot}`);
+      args.push("--ro-bind", packageRoot, packageRoot);
+    }
     args.push("--bind", paths.repo, paths.repo, "--bind", paths.scratch, paths.scratch, "--chdir", paths.repo, "--setenv", "HOME", paths.scratch, "--setenv", "PI_EPHEMERAL_CHILD", "1", "--", invocation.command, ...invocation.args);
     return { command: "bwrap", args, env: { ...invocation.env, HOME: paths.scratch, PI_EPHEMERAL_CHILD: "1" } };
   }

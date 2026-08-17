@@ -5,12 +5,12 @@ import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
 import type { AgentMetadata, AgentPaths, AgentSnapshot, SpawnRequest } from "./types";
-import { findMetadata, pathsFor, preparePaths, readMetadata, removeEmptyParents, writeMetadata } from "./storage";
+import { ensureIgnored, findMetadata, pathsFor, preparePaths, readMetadata, removeEmptyParents, writeJsonAtomic, writeMetadata } from "./storage";
 import { platformBackend, type Invocation, type SandboxBackend } from "./sandbox";
 
 const execFileAsync = promisify(execFile);
 const terminal = new Set(["completed", "failed", "timed_out", "cancelled"]);
-interface LiveAgent { paths: AgentPaths; metadata: AgentMetadata; process: ChildProcessWithoutNullStreams; outputBuffer: string; timer?: NodeJS.Timeout; requestTimer?: NodeJS.Timeout; resolve: (value: AgentSnapshot) => void; promise: Promise<AgentSnapshot>; }
+interface LiveAgent { paths: AgentPaths; metadata: AgentMetadata; process: ChildProcessWithoutNullStreams; outputBuffer: string; slotReleased: boolean; timer?: NodeJS.Timeout; requestTimer?: NodeJS.Timeout; resolve: (value: AgentSnapshot) => void; promise: Promise<AgentSnapshot>; }
 export interface ManagerOptions { repoRoot: string; sessionId?: string; concurrency?: number; backend?: SandboxBackend; invocation?: () => Invocation; onNudge?: (agent: AgentMetadata) => void; }
 
 export class EphemeralAgentManager {
@@ -27,10 +27,9 @@ export class EphemeralAgentManager {
   }
 
   async initialize(): Promise<void> {
-    const exclude = (await execFileAsync("git", ["rev-parse", "--git-path", "info/exclude"], { cwd: this.options.repoRoot })).stdout.trim();
-    await mkdir(dirname(exclude), { recursive: true });
-    let text = ""; try { text = await readFile(exclude, "utf8"); } catch { /* new */ }
-    if (!text.split(/\r?\n/).includes("/.pi-agents/")) await appendFile(exclude, `${text && !text.endsWith("\n") ? "\n" : ""}/.pi-agents/\n`);
+    const excludeOutput = (await execFileAsync("git", ["rev-parse", "--git-path", "info/exclude"], { cwd: this.options.repoRoot })).stdout.trim();
+    const exclude = excludeOutput.startsWith("/") ? excludeOutput : join(this.options.repoRoot, excludeOutput);
+    await ensureIgnored(exclude);
     await this.recover();
   }
 
@@ -58,7 +57,7 @@ export class EphemeralAgentManager {
       metadata.pid = child.pid; metadata.updatedAt = new Date().toISOString(); await writeMetadata(paths, metadata);
       let resolve!: (value: AgentSnapshot) => void;
       const promise = new Promise<AgentSnapshot>((r) => { resolve = r; });
-      const live: LiveAgent = { paths, metadata, process: child, outputBuffer: "", resolve, promise };
+      const live: LiveAgent = { paths, metadata, process: child, outputBuffer: "", slotReleased: false, resolve, promise };
       this.live.set(metadata.id, live);
       child.stdout.on("data", (data) => void this.consume(live, data.toString()));
       child.stderr.on("data", (data) => void appendFile(paths.transcript, JSON.stringify({ type: "stderr", text: data.toString() }) + "\n"));
@@ -71,9 +70,8 @@ export class EphemeralAgentManager {
     } catch (error) {
       metadata.state = "failed"; metadata.error = error instanceof Error ? error.message : String(error); metadata.updatedAt = new Date().toISOString();
       await writeMetadata(paths, metadata); this.options.onNudge?.(metadata);
+      this.releaseSlot();
       return { ...metadata, workspacePresent: true };
-    } finally {
-      this.active--; this.pending.shift()?.();
     }
   }
 
@@ -92,7 +90,7 @@ export class EphemeralAgentManager {
     if (!script) throw new Error("cannot locate the pi-coding-agent executable");
     const runtimeRoot = dirname(dirname(script));
     if (!relative(this.options.repoRoot, runtimeRoot).startsWith("..")) throw new Error("secure subagents require pi-coding-agent to be installed outside the repository checkout; the development entrypoint cannot be exposed without also exposing the parent checkout");
-    return { command: process.execPath, args: [script, "--mode", "rpc", "--no-session"], env: { ...process.env, PI_EPHEMERAL_RUNTIME_ROOT: runtimeRoot } };
+    return { command: process.execPath, args: [script, "--mode", "rpc", "--no-session"], env: childEnvironment(runtimeRoot) };
   }
 
   private async consume(live: LiveAgent, chunk: string): Promise<void> {
@@ -117,6 +115,7 @@ export class EphemeralAgentManager {
     try { live.metadata.changeSummary = (await execFileAsync("git", ["status", "--short"], { cwd: live.paths.repo })).stdout; } catch { /* keep result */ }
     await writeMetadata(live.paths, live.metadata);
     this.live.delete(live.metadata.id); this.options.onNudge?.(live.metadata);
+    if (!live.slotReleased) { live.slotReleased = true; this.releaseSlot(); }
     const snapshot = { ...live.metadata, workspacePresent: true }; live.resolve(snapshot);
   }
 
@@ -128,7 +127,7 @@ export class EphemeralAgentManager {
 
   async message(id: string, message: string): Promise<AgentSnapshot> {
     const live = this.live.get(id); if (!live) throw new Error(`agent ${id} is not running`);
-    if (live.metadata.state === "waiting_for_input") await writeFile(live.paths.response, JSON.stringify({ message }), { mode: 0o600 });
+    if (live.metadata.state === "waiting_for_input") await writeJsonAtomic(live.paths.response, { message });
     else live.process.stdin.write(`${JSON.stringify({ type: "follow_up", message })}\n`);
     live.metadata.state = "running"; live.metadata.question = undefined; live.metadata.updatedAt = new Date().toISOString(); await writeMetadata(live.paths, live.metadata);
     return { ...live.metadata, workspacePresent: true };
@@ -136,24 +135,37 @@ export class EphemeralAgentManager {
 
   async cancel(id: string): Promise<AgentSnapshot> { const live = this.live.get(id); if (!live) throw new Error(`agent ${id} is not running`); this.kill(live.process); await this.finish(live, "cancelled"); return this.status(id); }
   private kill(child: ChildProcessWithoutNullStreams): void { try { if (child.pid) process.kill(-child.pid, "SIGTERM"); else child.kill("SIGTERM"); } catch { child.kill("SIGTERM"); } }
+  private releaseSlot(): void { this.active = Math.max(0, this.active - 1); this.pending.shift()?.(); }
 
   async cleanup(id: string, sessionId = this.sessionId): Promise<void> {
     const paths = pathsFor(this.options.repoRoot, sessionId, id); const metadata = await readMetadata(paths);
     if (!terminal.has(metadata.state) && metadata.state !== "cleaning_up") throw new Error(`cannot clean up agent in ${metadata.state}`);
-    metadata.state = "cleaning_up"; metadata.updatedAt = new Date().toISOString(); await writeMetadata(paths, metadata);
     const archive = join(await this.gitCommonDir(), "pi-agent-results", metadata.sessionId); await mkdir(archive, { recursive: true });
     await writeFile(join(archive, `${id}.json`), JSON.stringify(metadata, null, 2));
-    let repoPresent = true; try { await access(paths.repo); } catch { repoPresent = false; }
-    if (repoPresent) await this.retry(async () => { await execFileAsync("git", ["worktree", "remove", "--force", paths.repo], { cwd: this.options.repoRoot }); });
-    await execFileAsync("git", ["worktree", "prune"], { cwd: this.options.repoRoot });
-    await rm(paths.root, { recursive: true, force: true }); await removeEmptyParents(paths, this.agentsRoot);
+    metadata.state = "cleaning_up"; metadata.updatedAt = new Date().toISOString(); await writeMetadata(paths, metadata);
+    try {
+      let repoPresent = true; try { await access(paths.repo); } catch { repoPresent = false; }
+      if (repoPresent) await this.retry(async () => { await execFileAsync("git", ["worktree", "remove", "--force", paths.repo], { cwd: this.options.repoRoot }); });
+      await execFileAsync("git", ["worktree", "prune"], { cwd: this.options.repoRoot });
+      await rm(paths.root, { recursive: true, force: true }); await removeEmptyParents(paths, this.agentsRoot);
+    } catch (error) {
+      metadata.state = "failed"; metadata.error = `cleanup failed after retries: ${error instanceof Error ? error.message : String(error)}`; metadata.updatedAt = new Date().toISOString();
+      await writeMetadata(paths, metadata); throw error;
+    }
   }
 
   private async gitCommonDir(): Promise<string> { const out = (await execFileAsync("git", ["rev-parse", "--git-common-dir"], { cwd: this.options.repoRoot })).stdout.trim(); return out.startsWith("/") ? out : join(this.options.repoRoot, out); }
   private async retry(operation: () => Promise<void>): Promise<void> { let last: unknown; for (let attempt = 0; attempt < 3; attempt++) { try { await operation(); return; } catch (error) { last = error; if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1))); } } throw last; }
   async recover(): Promise<void> {
     for (const file of await findMetadata(this.agentsRoot)) {
-      try { const m = JSON.parse(await readFile(file, "utf8")) as AgentMetadata; if (m.state === "cleaning_up") { await this.cleanup(m.id, m.sessionId); continue; } if (!terminal.has(m.state)) { m.state = "failed"; m.error = "recovered after parent process exited"; m.updatedAt = new Date().toISOString(); await writeFile(file, JSON.stringify(m, null, 2)); } } catch { /* preserve corrupt workspace for manual recovery */ }
+      try { const m = JSON.parse(await readFile(file, "utf8")) as AgentMetadata; const paths = pathsFor(this.options.repoRoot, m.sessionId, m.id); if (m.state === "cleaning_up") { try { await this.cleanup(m.id, m.sessionId); } catch { /* cleanup recorded the retryable failure */ } continue; } if (!terminal.has(m.state)) { m.state = "failed"; m.error = "recovered after parent process exited"; m.updatedAt = new Date().toISOString(); await writeMetadata(paths, m); } } catch { /* preserve corrupt workspace for manual recovery */ }
     }
   }
+}
+
+const CHILD_ENV_KEYS = ["PATH", "LANG", "LC_ALL", "TZ", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY", "AZURE_OPENAI_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_REGION", "AWS_DEFAULT_REGION"] as const;
+export function childEnvironment(runtimeRoot: string, source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { PI_EPHEMERAL_RUNTIME_ROOT: runtimeRoot };
+  for (const key of CHILD_ENV_KEYS) if (source[key] !== undefined) env[key] = source[key];
+  return env;
 }

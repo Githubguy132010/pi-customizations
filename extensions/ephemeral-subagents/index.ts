@@ -5,6 +5,7 @@ import { EphemeralAgentManager } from "./manager";
 import type { AgentPaths } from "./types";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const PARENT_INPUT_TIMEOUT_MS = 30 * 60_000;
 
 function registerChildTool(pi: ExtensionAPI): void {
   const paths = JSON.parse(process.env.PI_EPHEMERAL_PATHS ?? "null") as AgentPaths | null;
@@ -15,8 +16,12 @@ function registerChildTool(pi: ExtensionAPI): void {
     async execute(_id, params, signal) {
       await rm(paths.response, { force: true });
       await writeFile(paths.request, JSON.stringify({ question: params.question }), { mode: 0o600 });
+      const deadline = Date.now() + PARENT_INPUT_TIMEOUT_MS;
       while (!signal?.aborted) {
         try { const response = JSON.parse(await readFile(paths.response, "utf8")) as { message: string }; await rm(paths.request, { force: true }); await rm(paths.response, { force: true }); return { content: [{ type: "text" as const, text: response.message }], details: {} }; } catch { await sleep(200); }
+        if (Date.now() >= deadline) {
+          throw new Error(`timed out after ${PARENT_INPUT_TIMEOUT_MS}ms waiting for a valid parent response`);
+        }
       }
       throw new Error("cancelled while waiting for parent input");
     },
