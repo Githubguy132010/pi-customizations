@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { access, appendFile, lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, join, relative } from "node:path";
+import { access, appendFile, lstat, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
@@ -10,7 +10,8 @@ import { platformBackend, type Invocation, type SandboxBackend } from "./sandbox
 
 const execFileAsync = promisify(execFile);
 const terminal = new Set(["completed", "failed", "timed_out", "cancelled"]);
-interface LiveAgent { paths: AgentPaths; metadata: AgentMetadata; trustedGitDir: string; process: ChildProcessWithoutNullStreams; outputBuffer: string; slotReleased: boolean; timer?: NodeJS.Timeout; requestTimer?: NodeJS.Timeout; resolve: (value: AgentSnapshot) => void; promise: Promise<AgentSnapshot>; }
+interface LiveAgent { paths: AgentPaths; metadata: AgentMetadata; trustedGitDir: string; process: ChildProcessWithoutNullStreams; outputBuffer: string; stderrBuffer: string; stderrTruncated: boolean; transcriptWrites: Promise<void>; slotReleased: boolean; timer?: NodeJS.Timeout; requestTimer?: NodeJS.Timeout; resolve: (value: AgentSnapshot) => void; promise: Promise<AgentSnapshot>; }
+const MAX_STARTUP_ERROR_LENGTH = 16 * 1024;
 export interface ManagerOptions { repoRoot: string; sessionId?: string; concurrency?: number; backend?: SandboxBackend; invocation?: () => Invocation; onNudge?: (agent: AgentMetadata) => void; }
 
 export class EphemeralAgentManager {
@@ -54,16 +55,22 @@ export class EphemeralAgentManager {
       // Resolve this before the child starts. Never rediscover Git metadata from
       // the child-controlled worktree after it has run.
       const trustedGitDir = (await execFileAsync("git", ["rev-parse", "--absolute-git-dir"], { cwd: paths.repo })).stdout.trim();
-      const base = this.options.invocation?.() ?? this.defaultInvocation();
+      const base = this.options.invocation?.() ?? await defaultInvocation(this.options.repoRoot);
       const invocation = await (this.options.backend ?? platformBackend()).wrap(base, paths);
       const child = spawn(invocation.command, invocation.args, { cwd: paths.repo, env: { ...invocation.env, PI_EPHEMERAL_PATHS: JSON.stringify(paths) }, stdio: ["pipe", "pipe", "pipe"], detached: true });
       metadata.pid = child.pid; metadata.updatedAt = new Date().toISOString(); await writeMetadata(paths, metadata);
       let resolve!: (value: AgentSnapshot) => void;
       const promise = new Promise<AgentSnapshot>((r) => { resolve = r; });
-      const live: LiveAgent = { paths, metadata, trustedGitDir, process: child, outputBuffer: "", slotReleased: false, resolve, promise };
+      const live: LiveAgent = { paths, metadata, trustedGitDir, process: child, outputBuffer: "", stderrBuffer: "", stderrTruncated: false, transcriptWrites: Promise.resolve(), slotReleased: false, resolve, promise };
       this.live.set(metadata.id, live);
       child.stdout.on("data", (data) => void this.consume(live, data.toString()));
-      child.stderr.on("data", (data) => void appendFile(paths.transcript, JSON.stringify({ type: "stderr", text: data.toString() }) + "\n"));
+      child.stderr.on("data", (data) => {
+        const text = data.toString();
+        live.transcriptWrites = live.transcriptWrites.then(() => appendFile(paths.transcript, JSON.stringify({ type: "stderr", text }) + "\n"));
+        const available = MAX_STARTUP_ERROR_LENGTH - live.stderrBuffer.length;
+        if (available > 0) live.stderrBuffer += text.slice(0, available);
+        if (text.length > available) live.stderrTruncated = true;
+      });
       child.on("error", (error) => void this.finish(live, "failed", undefined, error.message));
       child.on("close", (code) => void this.finish(live, code === 0 ? "completed" : "failed", code ?? undefined));
       live.timer = setTimeout(() => { this.kill(child); void this.finish(live, "timed_out", undefined, `timed out after ${timeoutMs}ms`); }, timeoutMs);
@@ -92,16 +99,9 @@ export class EphemeralAgentManager {
     } catch { /* no request */ }
   }
 
-  private defaultInvocation(): Invocation {
-    const script = process.argv[1];
-    if (!script) throw new Error("cannot locate the pi-coding-agent executable");
-    const runtimeRoot = dirname(dirname(script));
-    if (!relative(this.options.repoRoot, runtimeRoot).startsWith("..")) throw new Error("secure subagents require pi-coding-agent to be installed outside the repository checkout; the development entrypoint cannot be exposed without also exposing the parent checkout");
-    return { command: process.execPath, args: [script, "--mode", "rpc", "--no-session"], env: childEnvironment(runtimeRoot) };
-  }
-
   private async consume(live: LiveAgent, chunk: string): Promise<void> {
-    await appendFile(live.paths.transcript, chunk);
+    live.transcriptWrites = live.transcriptWrites.then(() => appendFile(live.paths.transcript, chunk));
+    await live.transcriptWrites;
     live.outputBuffer += chunk;
     const lines = live.outputBuffer.split("\n");
     live.outputBuffer = lines.pop() ?? "";
@@ -118,7 +118,12 @@ export class EphemeralAgentManager {
     if (terminal.has(live.metadata.state)) return;
     if (live.timer) clearTimeout(live.timer);
     if (live.requestTimer) clearInterval(live.requestTimer);
-    live.metadata.state = state; live.metadata.exitCode = exitCode; live.metadata.error = error; live.metadata.updatedAt = new Date().toISOString();
+    await live.transcriptWrites.catch(() => undefined);
+    const stderr = live.stderrBuffer.trim();
+    const childError = state === "failed" && !live.metadata.result && stderr
+      ? `child process failed${exitCode === undefined ? "" : ` with exit code ${exitCode}`}: ${stderr}${live.stderrTruncated ? "\n[stderr truncated; see transcript for full output]" : ""}`
+      : undefined;
+    live.metadata.state = state; live.metadata.exitCode = exitCode; live.metadata.error = error ?? childError; live.metadata.updatedAt = new Date().toISOString();
     try { live.metadata.changeSummary = await this.safeChangeSummary(live); } catch { /* keep result */ }
     try {
       await writeMetadata(live.paths, live.metadata);
@@ -234,6 +239,21 @@ export class EphemeralAgentManager {
 }
 
 const CHILD_ENV_KEYS = ["PATH", "LANG", "LC_ALL", "TZ", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY", "AZURE_OPENAI_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_REGION", "AWS_DEFAULT_REGION"] as const;
+export async function defaultInvocation(repoRoot: string, script = process.argv[1], executable = process.execPath): Promise<Invocation> {
+  if (!script) throw new Error("cannot locate the pi-coding-agent executable");
+  const [canonicalScript, canonicalExecutable, canonicalRepo] = await Promise.all([
+    realpath(script),
+    realpath(executable),
+    realpath(repoRoot),
+  ]);
+  const scriptRelativeToRepo = relative(canonicalRepo, canonicalScript);
+  if (scriptRelativeToRepo === "" || (!scriptRelativeToRepo.startsWith("..") && !isAbsolute(scriptRelativeToRepo))) {
+    throw new Error(`secure subagents cannot launch the development pi-coding-agent entrypoint at ${canonicalScript}; install pi-coding-agent outside the repository checkout (for example with npm or mise) and launch that installation`);
+  }
+  const runtimeRoot = dirname(dirname(canonicalScript));
+  return { command: canonicalExecutable, args: [canonicalScript, "--mode", "rpc", "--no-session"], env: childEnvironment(runtimeRoot) };
+}
+
 export function childEnvironment(runtimeRoot: string, source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { PI_EPHEMERAL_RUNTIME_ROOT: runtimeRoot };
   for (const key of CHILD_ENV_KEYS) if (source[key] !== undefined) env[key] = source[key];

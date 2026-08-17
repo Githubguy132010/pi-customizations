@@ -1,9 +1,9 @@
 import { execFileSync } from "node:child_process";
-import { access, mkdtemp, rm, symlink } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { childEnvironment, EphemeralAgentManager } from "../../extensions/ephemeral-subagents/manager";
+import { childEnvironment, defaultInvocation, EphemeralAgentManager } from "../../extensions/ephemeral-subagents/manager";
 import type { Invocation, SandboxBackend } from "../../extensions/ephemeral-subagents/sandbox";
 import { pathsFor } from "../../extensions/ephemeral-subagents/storage";
 
@@ -25,6 +25,51 @@ async function repository(): Promise<string> {
 }
 
 describe("ephemeral agent manager", () => {
+  it("rejects a symlink chain resolving to a development entrypoint", async () => {
+    const repoRoot = await repository();
+    const script = join(repoRoot, "bin", "pi-coding-agent.mjs");
+    const links = await mkdtemp(join(tmpdir(), "pi-links-")); roots.push(links);
+    await mkdir(join(repoRoot, "bin"));
+    await writeFile(script, "#!/usr/bin/env node\n");
+    await symlink(script, join(links, "first"));
+    await symlink(join(links, "first"), join(links, "pi-coding-agent"));
+
+    await expect(defaultInvocation(repoRoot, join(links, "pi-coding-agent"))).rejects.toThrow(/development pi-coding-agent entrypoint.*install pi-coding-agent outside/s);
+  });
+
+  it("canonicalizes a symlinked external installation for sandbox mounting and invocation", async () => {
+    const repoRoot = await repository();
+    const installation = await mkdtemp(join(tmpdir(), "pi-install-")); roots.push(installation);
+    const links = await mkdtemp(join(tmpdir(), "pi-links-")); roots.push(links);
+    const script = join(installation, "bin", "pi-coding-agent.mjs");
+    await mkdir(join(installation, "bin"));
+    await writeFile(script, "#!/usr/bin/env node\n");
+    await symlink(script, join(links, "pi-coding-agent"));
+
+    const invocation = await defaultInvocation(repoRoot, join(links, "pi-coding-agent"));
+    expect(invocation.args[0]).toBe(script);
+    expect(invocation.env.PI_EPHEMERAL_RUNTIME_ROOT).toBe(installation);
+    expect(invocation.command).toBe(await realpath(process.execPath));
+  });
+
+  it("surfaces bounded startup stderr through foreground spawn and status while preserving the transcript", async () => {
+    const repoRoot = await repository();
+    const stderr = `startup module resolution failed: missing-package\n${"x".repeat(20_000)}`;
+    const invocation = (): Invocation => ({ command: process.execPath, args: ["-e", `process.stderr.write(${JSON.stringify(stderr)}); process.exit(1)`], env: { PATH: process.env.PATH } });
+    const manager = new EphemeralAgentManager({ repoRoot, sessionId: "session", backend: passthrough, invocation });
+    await manager.initialize();
+
+    const agent = await manager.spawn({ task: "fail during startup" });
+    expect(agent.state).toBe("failed");
+    expect(agent.error).toContain("startup module resolution failed: missing-package");
+    expect(agent.error).toContain("stderr truncated");
+    expect(agent.error!.length).toBeLessThan(17_000);
+    expect((await manager.status(agent.id)).error).toBe(agent.error);
+    const transcript = await readFile(pathsFor(repoRoot, "session", agent.id).transcript, "utf8");
+    expect(transcript).toContain("x".repeat(20_000));
+    await manager.cleanup(agent.id);
+  });
+
   it("holds a concurrency slot until the child actually finishes", async () => {
     const repoRoot = await repository();
     const invocation = (): Invocation => ({ command: process.execPath, args: ["-e", childScript], env: { PATH: process.env.PATH } });
