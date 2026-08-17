@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionContext, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -84,7 +84,11 @@ export function findPullRequestTemplates(repoRoot: string): string[] {
   const seen = new Set<string>();
   const addTemplate = (candidate: string) => {
     if (!existsSync(candidate)) return;
-    const identity = realpathSync(candidate);
+    let identity = candidate;
+    try {
+      const stats = statSync(candidate, { bigint: true });
+      identity = `${stats.dev}:${stats.ino}`;
+    } catch { /* a raced or inaccessible path falls back to its candidate spelling */ }
     if (seen.has(identity)) return;
     seen.add(identity);
     templates.push(candidate);

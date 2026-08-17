@@ -59,4 +59,16 @@ describe("ephemeral agent manager", () => {
     const env = childEnvironment("/opt/pi", { PATH: "/bin", OPENAI_API_KEY: "needed", GITHUB_TOKEN: "secret", RANDOM_SECRET: "secret" });
     expect(env).toEqual({ PI_EPHEMERAL_RUNTIME_ROOT: "/opt/pi", PATH: "/bin", OPENAI_API_KEY: "needed" });
   });
+
+  it("releases a setup slot even when failure notification throws", async () => {
+    const repoRoot = await repository();
+    const failingBackend: SandboxBackend = { name: "failing", async wrap() { throw new Error("sandbox failed"); } };
+    const invocation = (): Invocation => ({ command: process.execPath, args: [], env: {} });
+    const manager = new EphemeralAgentManager({ repoRoot, sessionId: "session", concurrency: 1, backend: failingBackend, invocation, onNudge: () => { throw new Error("notification failed"); } });
+    await manager.initialize();
+    const first = await manager.spawn({ task: "one", background: true });
+    await waitFor(async () => (await manager.status(first.id)).state === "failed");
+    const second = await manager.spawn({ task: "two", background: true });
+    await waitFor(async () => (await manager.status(second.id)).state === "failed");
+  });
 });

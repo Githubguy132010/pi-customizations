@@ -69,9 +69,13 @@ export class EphemeralAgentManager {
       return promise;
     } catch (error) {
       metadata.state = "failed"; metadata.error = error instanceof Error ? error.message : String(error); metadata.updatedAt = new Date().toISOString();
-      await writeMetadata(paths, metadata); this.options.onNudge?.(metadata);
-      this.releaseSlot();
-      return { ...metadata, workspacePresent: true };
+      try {
+        await writeMetadata(paths, metadata);
+        try { this.options.onNudge?.(metadata); } catch { /* notifications must not consume a slot */ }
+        return { ...metadata, workspacePresent: true };
+      } finally {
+        this.releaseSlot();
+      }
     }
   }
 
@@ -113,10 +117,17 @@ export class EphemeralAgentManager {
     if (live.requestTimer) clearInterval(live.requestTimer);
     live.metadata.state = state; live.metadata.exitCode = exitCode; live.metadata.error = error; live.metadata.updatedAt = new Date().toISOString();
     try { live.metadata.changeSummary = (await execFileAsync("git", ["status", "--short"], { cwd: live.paths.repo })).stdout; } catch { /* keep result */ }
-    await writeMetadata(live.paths, live.metadata);
-    this.live.delete(live.metadata.id); this.options.onNudge?.(live.metadata);
-    if (!live.slotReleased) { live.slotReleased = true; this.releaseSlot(); }
-    const snapshot = { ...live.metadata, workspacePresent: true }; live.resolve(snapshot);
+    try {
+      await writeMetadata(live.paths, live.metadata);
+    } catch (persistError) {
+      live.metadata.state = "failed";
+      live.metadata.error = `could not persist terminal state: ${persistError instanceof Error ? persistError.message : String(persistError)}`;
+    } finally {
+      this.live.delete(live.metadata.id);
+      try { this.options.onNudge?.(live.metadata); } catch { /* notifications are non-critical */ }
+      if (!live.slotReleased) { live.slotReleased = true; this.releaseSlot(); }
+      live.resolve({ ...live.metadata, workspacePresent: true });
+    }
   }
 
   async status(id: string): Promise<AgentSnapshot> {
@@ -158,7 +169,24 @@ export class EphemeralAgentManager {
   private async retry(operation: () => Promise<void>): Promise<void> { let last: unknown; for (let attempt = 0; attempt < 3; attempt++) { try { await operation(); return; } catch (error) { last = error; if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1))); } } throw last; }
   async recover(): Promise<void> {
     for (const file of await findMetadata(this.agentsRoot)) {
-      try { const m = JSON.parse(await readFile(file, "utf8")) as AgentMetadata; const paths = pathsFor(this.options.repoRoot, m.sessionId, m.id); if (m.state === "cleaning_up") { try { await this.cleanup(m.id, m.sessionId); } catch { /* cleanup recorded the retryable failure */ } continue; } if (!terminal.has(m.state)) { m.state = "failed"; m.error = "recovered after parent process exited"; m.updatedAt = new Date().toISOString(); await writeMetadata(paths, m); } } catch { /* preserve corrupt workspace for manual recovery */ }
+      try {
+        const m = JSON.parse(await readFile(file, "utf8")) as AgentMetadata;
+        const paths = pathsFor(this.options.repoRoot, m.sessionId, m.id);
+        if (m.state === "cleaning_up") {
+          try {
+            await this.cleanup(m.id, m.sessionId);
+          } catch (cleanupError) {
+            m.state = "failed";
+            m.error = `startup cleanup recovery failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`;
+            m.updatedAt = new Date().toISOString();
+            try { await writeMetadata(paths, m); } catch { /* preserve workspace and archived result for manual recovery */ }
+          }
+          continue;
+        }
+        if (!terminal.has(m.state)) {
+          m.state = "failed"; m.error = "recovered after parent process exited"; m.updatedAt = new Date().toISOString(); await writeMetadata(paths, m);
+        }
+      } catch { /* preserve corrupt workspace for manual recovery */ }
     }
   }
 }
