@@ -9,6 +9,7 @@ const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const packageManifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
 const bundledExtensions = [
   "extensions/bash-only/index.ts",
+  "extensions/ephemeral-subagents/index.ts",
   "extensions/session-workdir/index.ts",
   "extensions/slash-command-visibility/index.ts",
   "extensions/yeet/index.ts",

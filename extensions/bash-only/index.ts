@@ -12,7 +12,8 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("tool_call", (event: { toolName: string }) => {
-    if (event.toolName === "bash") {
+    const optional = process.env.PI_EPHEMERAL_CHILD === "1" ? "request_parent_input" : "ephemeral_agent";
+    if (event.toolName === "bash" || event.toolName === optional) {
       return;
     }
 

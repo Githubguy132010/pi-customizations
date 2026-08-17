@@ -24,11 +24,12 @@ pi-coding-agent --version
 
 ## Included customizations
 
-The standalone CLI always loads all five bundled extensions.
+The standalone CLI always loads all six bundled extensions.
 
 | Extension | What it does |
 | --- | --- |
 | `bash-only` | Enforces a bash-only tool policy. |
+| `ephemeral-subagents` | Runs short-lived agents in isolated Git worktrees with lifecycle management. |
 | `session-workdir` | Persists and restores each session's working directory. |
 | `slash-command-visibility` | Hides selected built-in commands from slash autocomplete. |
 | `yeet` | Adds `/yeet` for AI-assisted commits, pushes, and PR creation. |
@@ -43,6 +44,14 @@ The following built-in commands are hidden from autocomplete:
 `/name`, `/tree`, `/fork`, `/clone`, `/compact`, `/trust`, `/export`, `/import`, `/share`, `/hotkeys`, `/changelog`, and `/llama`.
 
 They remain executable when entered manually.
+
+### Ephemeral subagents
+
+The `ephemeral_agent` tool supports foreground and background runs, status/result reads, follow-up messages, cancellation, and deliberate cleanup. Workspaces live under the repository's Git-ignored `.pi-agents/<session>/<agent>/` directory. Cleanup first archives the final lifecycle record (including the final answer and `git status` change summary) under the repository's Git common directory, then removes the worktree and private workspace.
+
+Linux and WSL require `bubblewrap`; the child process receives a minimal system view plus only its own writable `repo` and `scratch` directories. The Pi distribution must be installed outside the working repository—development entrypoints are rejected because making one executable inside the parent checkout visible would violate the isolation contract. Native Windows is unsupported. The macOS `sandbox-exec` backend is experimental and its contract is exercised in macOS CI; it should not yet be treated as equivalent to the Linux security boundary.
+
+Background parallelism defaults to four agents and can be configured with `PI_SUBAGENT_CONCURRENCY`. Child agents do not receive `ephemeral_agent`, preventing recursive spawning; they instead receive `request_parent_input` for explicit bidirectional handoffs.
 
 ## Custom commands
 
