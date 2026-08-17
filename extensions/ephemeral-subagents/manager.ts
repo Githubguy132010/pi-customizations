@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { access, appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
@@ -10,7 +10,7 @@ import { platformBackend, type Invocation, type SandboxBackend } from "./sandbox
 
 const execFileAsync = promisify(execFile);
 const terminal = new Set(["completed", "failed", "timed_out", "cancelled"]);
-interface LiveAgent { paths: AgentPaths; metadata: AgentMetadata; process: ChildProcessWithoutNullStreams; outputBuffer: string; slotReleased: boolean; timer?: NodeJS.Timeout; requestTimer?: NodeJS.Timeout; resolve: (value: AgentSnapshot) => void; promise: Promise<AgentSnapshot>; }
+interface LiveAgent { paths: AgentPaths; metadata: AgentMetadata; trustedGitDir: string; process: ChildProcessWithoutNullStreams; outputBuffer: string; slotReleased: boolean; timer?: NodeJS.Timeout; requestTimer?: NodeJS.Timeout; resolve: (value: AgentSnapshot) => void; promise: Promise<AgentSnapshot>; }
 export interface ManagerOptions { repoRoot: string; sessionId?: string; concurrency?: number; backend?: SandboxBackend; invocation?: () => Invocation; onNudge?: (agent: AgentMetadata) => void; }
 
 export class EphemeralAgentManager {
@@ -51,13 +51,16 @@ export class EphemeralAgentManager {
     this.active++;
     try {
       await execFileAsync("git", ["worktree", "add", "--detach", paths.repo, "HEAD"], { cwd: this.options.repoRoot });
+      // Resolve this before the child starts. Never rediscover Git metadata from
+      // the child-controlled worktree after it has run.
+      const trustedGitDir = (await execFileAsync("git", ["rev-parse", "--absolute-git-dir"], { cwd: paths.repo })).stdout.trim();
       const base = this.options.invocation?.() ?? this.defaultInvocation();
       const invocation = await (this.options.backend ?? platformBackend()).wrap(base, paths);
       const child = spawn(invocation.command, invocation.args, { cwd: paths.repo, env: { ...invocation.env, PI_EPHEMERAL_PATHS: JSON.stringify(paths) }, stdio: ["pipe", "pipe", "pipe"], detached: true });
       metadata.pid = child.pid; metadata.updatedAt = new Date().toISOString(); await writeMetadata(paths, metadata);
       let resolve!: (value: AgentSnapshot) => void;
       const promise = new Promise<AgentSnapshot>((r) => { resolve = r; });
-      const live: LiveAgent = { paths, metadata, process: child, outputBuffer: "", slotReleased: false, resolve, promise };
+      const live: LiveAgent = { paths, metadata, trustedGitDir, process: child, outputBuffer: "", slotReleased: false, resolve, promise };
       this.live.set(metadata.id, live);
       child.stdout.on("data", (data) => void this.consume(live, data.toString()));
       child.stderr.on("data", (data) => void appendFile(paths.transcript, JSON.stringify({ type: "stderr", text: data.toString() }) + "\n"));
@@ -116,7 +119,7 @@ export class EphemeralAgentManager {
     if (live.timer) clearTimeout(live.timer);
     if (live.requestTimer) clearInterval(live.requestTimer);
     live.metadata.state = state; live.metadata.exitCode = exitCode; live.metadata.error = error; live.metadata.updatedAt = new Date().toISOString();
-    try { live.metadata.changeSummary = (await execFileAsync("git", ["status", "--short"], { cwd: live.paths.repo })).stdout; } catch { /* keep result */ }
+    try { live.metadata.changeSummary = await this.safeChangeSummary(live); } catch { /* keep result */ }
     try {
       await writeMetadata(live.paths, live.metadata);
     } catch (persistError) {
@@ -147,6 +150,25 @@ export class EphemeralAgentManager {
   async cancel(id: string): Promise<AgentSnapshot> { const live = this.live.get(id); if (!live) throw new Error(`agent ${id} is not running`); this.kill(live.process); await this.finish(live, "cancelled"); return this.status(id); }
   private kill(child: ChildProcessWithoutNullStreams): void { try { if (child.pid) process.kill(-child.pid, "SIGTERM"); else child.kill("SIGTERM"); } catch { child.kill("SIGTERM"); } }
   private releaseSlot(): void { this.active = Math.max(0, this.active - 1); this.pending.shift()?.(); }
+  private async safeChangeSummary(live: LiveAgent): Promise<string> {
+    const args = [
+      "-c", "core.fsmonitor=false",
+      "-c", "core.hooksPath=/dev/null",
+      "-c", "core.untrackedCache=false",
+      "-c", "submodule.recurse=false",
+      `--git-dir=${live.trustedGitDir}`,
+      `--work-tree=${live.paths.repo}`,
+      "status", "--short", "--untracked-files=all",
+    ];
+    const env: NodeJS.ProcessEnv = {
+      PATH: process.env.PATH,
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_ATTR_NOSYSTEM: "1",
+      GIT_OPTIONAL_LOCKS: "0",
+    };
+    return (await execFileAsync("git", args, { cwd: live.paths.repo, env })).stdout;
+  }
 
   async cleanup(id: string, sessionId = this.sessionId): Promise<void> {
     const paths = pathsFor(this.options.repoRoot, sessionId, id); const metadata = await readMetadata(paths);
@@ -156,7 +178,19 @@ export class EphemeralAgentManager {
     metadata.state = "cleaning_up"; metadata.updatedAt = new Date().toISOString(); await writeMetadata(paths, metadata);
     try {
       let repoPresent = true; try { await access(paths.repo); } catch { repoPresent = false; }
-      if (repoPresent) await this.retry(async () => { await execFileAsync("git", ["worktree", "remove", "--force", paths.repo], { cwd: this.options.repoRoot }); });
+      if (repoPresent) {
+        try {
+          await this.retry(async () => { await execFileAsync("git", ["worktree", "remove", "--force", paths.repo], { cwd: this.options.repoRoot }); });
+        } catch (removeError) {
+          // A child may replace the worktree's .git file. Git then refuses to
+          // remove it, so remove only this already-archived agent repo and let
+          // `worktree prune` discard the trusted administrative entry.
+          let gitFileIntact = false;
+          try { gitFileIntact = (await stat(join(paths.repo, ".git"))).isFile(); } catch { /* missing/replaced */ }
+          if (gitFileIntact) throw removeError;
+          await rm(paths.repo, { recursive: true, force: true });
+        }
+      }
       await execFileAsync("git", ["worktree", "prune"], { cwd: this.options.repoRoot });
       await rm(paths.root, { recursive: true, force: true }); await removeEmptyParents(paths, this.agentsRoot);
     } catch (error) {
@@ -184,7 +218,8 @@ export class EphemeralAgentManager {
           continue;
         }
         if (!terminal.has(m.state)) {
-          m.state = "failed"; m.error = "recovered after parent process exited"; m.updatedAt = new Date().toISOString(); await writeMetadata(paths, m);
+          m.state = "failed"; m.error = "recovered after parent process exited"; m.updatedAt = new Date().toISOString();
+          try { await writeMetadata(paths, m); } catch { /* preserve workspace and prior lifecycle record for manual recovery */ }
         }
       } catch { /* preserve corrupt workspace for manual recovery */ }
     }

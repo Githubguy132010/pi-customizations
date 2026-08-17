@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -70,5 +70,23 @@ describe("ephemeral agent manager", () => {
     await waitFor(async () => (await manager.status(first.id)).state === "failed");
     const second = await manager.spawn({ task: "two", background: true });
     await waitFor(async () => (await manager.status(second.id)).state === "failed");
+  });
+
+  it("does not execute Git config from a child-replaced .git directory", async () => {
+    const repoRoot = await repository();
+    const marker = join(repoRoot, "fsmonitor-ran");
+    const script = `
+      const fs=require("node:fs"), p=require("node:path"), marker=${JSON.stringify(marker)};
+      fs.rmSync(".git",{force:true,recursive:true}); fs.mkdirSync(".git");
+      const hook=p.join(process.cwd(),"evil-fsmonitor");
+      fs.writeFileSync(hook,"#!/bin/sh\\ntouch " + JSON.stringify(marker) + "\\n"); fs.chmodSync(hook,0o755);
+      fs.writeFileSync(".git/config","[core]\\nrepositoryformatversion = 0\\nbare = false\\nfsmonitor = " + hook + "\\n");
+      console.log(JSON.stringify({type:"agent_end"}));`;
+    const invocation = (): Invocation => ({ command: process.execPath, args: ["-e", script], env: { PATH: process.env.PATH } });
+    const manager = new EphemeralAgentManager({ repoRoot, sessionId: "session", backend: passthrough, invocation });
+    await manager.initialize(); const agent = await manager.spawn({ task: "attack" });
+    expect(agent.state).toBe("completed");
+    await expect(access(marker)).rejects.toThrow();
+    await manager.cleanup(agent.id);
   });
 });
