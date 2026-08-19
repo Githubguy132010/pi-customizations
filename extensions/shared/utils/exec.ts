@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExecOptions, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { ExecResultLike } from "../types";
 
 export async function runCommand(
@@ -6,9 +6,10 @@ export async function runCommand(
   command: string,
   args: string[],
   cwd: string = process.cwd(),
+  options: Omit<ExecOptions, "cwd"> = {},
 ): Promise<ExecResultLike> {
   try {
-    return await pi.exec(command, args, { cwd });
+    return await pi.exec(command, args, { ...options, cwd });
   } catch (error) {
     return {
       code: 1,

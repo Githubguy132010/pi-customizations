@@ -1,9 +1,9 @@
 import { resolve } from "node:path";
-import { appendFileSync } from "node:fs";
+import { appendFile } from "node:fs/promises";
 import { Type } from "typebox";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { RpcClient, type ExtensionAPI, type ExtensionContext, type RpcClientOptions } from "@earendil-works/pi-coding-agent";
 
-import { EphemeralAgentManager, type EphemeralAgentSnapshot } from "../shared/ephemeralAgents";
+import { EphemeralAgentManager, type AgentClient, type EphemeralAgentSnapshot } from "../shared/ephemeralAgents";
 import { resolveRepoRoot } from "../shared/utils/git";
 import { runCommand, summarizeError } from "../shared/utils/exec";
 
@@ -46,7 +46,43 @@ function formatSnapshots(snapshots: EphemeralAgentSnapshot | EphemeralAgentSnaps
   return Array.isArray(snapshots) ? { agents: snapshots } : snapshots;
 }
 
-export default function (pi: ExtensionAPI) {
+export async function cloneIsolatedRepo(
+  pi: ExtensionAPI,
+  source: string,
+  destination: string,
+  signal?: AbortSignal,
+  timeoutMs?: number,
+): Promise<void> {
+  const options = { signal, timeout: timeoutMs };
+  const clone = await runCommand(
+    pi,
+    "git",
+    ["clone", "--local", "--no-hardlinks", "--quiet", source, destination],
+    process.cwd(),
+    options,
+  );
+  if (clone.code !== 0) throw new Error(`Could not create the agent checkout: ${summarizeError(clone)}`);
+
+  const disconnect = await runCommand(
+    pi,
+    "git",
+    ["-C", destination, "remote", "remove", "origin"],
+    process.cwd(),
+    options,
+  );
+  if (disconnect.code !== 0) throw new Error(`Could not isolate the agent checkout: ${summarizeError(disconnect)}`);
+}
+
+export type EphemeralAgentController = Pick<
+  EphemeralAgentManager,
+  "spawn" | "status" | "send" | "wait" | "close" | "dispose"
+>;
+
+export function createRpcClient(options: RpcClientOptions): AgentClient {
+  return new RpcClient(options);
+}
+
+export default function (pi: ExtensionAPI, managerOverride?: EphemeralAgentController) {
   if (process.env.PI_EPHEMERAL_SUBAGENT) {
     const mailbox = process.env.PI_EPHEMERAL_MAILBOX;
     if (!mailbox) return;
@@ -58,19 +94,17 @@ export default function (pi: ExtensionAPI) {
       async execute(_toolCallId, params) {
         const message = params.message.trim();
         if (!message) return textResult("message is required", true);
-        appendFileSync(mailbox, `${JSON.stringify({ kind: params.kind, message, timestamp: new Date().toISOString() })}\n`);
+        await appendFile(mailbox, `${JSON.stringify({ kind: params.kind, message, timestamp: new Date().toISOString() })}\n`);
         return textResult("Report sent");
       },
     });
     return;
   }
 
-  const manager = new EphemeralAgentManager({
+  const manager = managerOverride ?? new EphemeralAgentManager({
     cliPath: CLI_PATH,
-    cloneRepo: async (source, destination) => {
-      const result = await runCommand(pi, "git", ["clone", "--local", "--no-hardlinks", "--quiet", source, destination]);
-      if (result.code !== 0) throw new Error(`Could not create the agent checkout: ${summarizeError(result)}`);
-    },
+    cloneRepo: cloneIsolatedRepo.bind(undefined, pi),
+    createClient: createRpcClient,
   });
 
   pi.registerTool({
@@ -78,7 +112,7 @@ export default function (pi: ExtensionAPI) {
     label: "Ephemeral agent",
     description: [
       "Manage separate, short-lived coding agents. Actions: start creates a private scratch/repo checkout and runs a task;",
-      "status lists agents; message sends a follow-up; wait waits for a result; close kills the process and normally deletes its workspace.",
+      "status lists agents; message steers active work or starts a new turn when idle; wait waits for a result; close kills the process and normally deletes its workspace.",
       "Use background starts for parallel work. Changes stay in each checkout until you inspect or copy them.",
     ].join(" "),
     promptSnippet: "Start and coordinate short-lived agents in private repository checkouts",

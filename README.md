@@ -28,7 +28,7 @@ The standalone CLI always loads all six bundled extensions.
 
 | Extension | What it does |
 | --- | --- |
-| `bash-only` | Enforces a bash-only tool policy. |
+| `bash-only` | Restricts agents to bash and the ephemeral-agent coordination tools available to their role. |
 | `session-workdir` | Persists and restores each session's working directory. |
 | `ephemeral-agents` | Runs short-lived sub-agents in separate repository checkouts. |
 | `slash-command-visibility` | Hides selected built-in commands from slash autocomplete. |
@@ -58,7 +58,7 @@ The main agent can use the `ephemeral_agent` tool to start, inspect, message, wa
     └── repo/
 ```
 
-`repo/` is an independent local clone at the source repository's current `HEAD`. Uncommitted and untracked files from the source checkout are not copied. A background start returns immediately, so the main agent can run several agents at once. Sub-agents can post progress or questions to `reports.jsonl`; the main agent receives them through the `status` action and can answer with `message`.
+`repo/` is an independent local clone at the source repository's current `HEAD`. Uncommitted and untracked files from the source checkout are not copied, and the clone's source-pointing Git remote is removed. A background start returns immediately, so the main agent can run several agents at once. Sub-agents can post progress or questions to `reports.jsonl`; the main agent receives them through the `status` action and can answer with `message`.
 
 Changes remain in the sub-agent checkout. The main agent must inspect or copy them before calling `close`, which kills the child process and deletes its workspace by default. Quitting or reloading the parent session closes every remaining sub-agent and removes the shared temporary root.
 
