@@ -142,7 +142,7 @@ export default function (pi: ExtensionAPI, managerOverride?: EphemeralAgentContr
             return textResult(formatSnapshots(snapshot));
           }
           case "status":
-            return textResult(formatSnapshots(await manager.status(params.id)));
+            return textResult(formatSnapshots(await manager.status(params.id, timeoutMs, signal)));
           case "message":
             return textResult(formatSnapshots(await manager.send(
               requireText(params.id, "id"), requireText(params.message, "message"),

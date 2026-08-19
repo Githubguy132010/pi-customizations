@@ -104,8 +104,10 @@ describe("extension entrypoints", () => {
       model: { provider: "openai", id: "gpt-test" }, thinkingLevel: "high",
     }));
 
-    await tool.execute("status", { action: "status", id: "agent-1" }, signal, undefined, ctx);
-    expect(manager.status).toHaveBeenCalledWith("agent-1");
+    await tool.execute("status", {
+      action: "status", id: "agent-1", timeout_seconds: 5,
+    }, signal, undefined, ctx);
+    expect(manager.status).toHaveBeenCalledWith("agent-1", 5000, signal);
 
     await tool.execute("message", {
       action: "message", id: " agent-1 ", message: " Continue ", wait: true,

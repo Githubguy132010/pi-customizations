@@ -271,21 +271,32 @@ export class EphemeralAgentManager {
     return this.snapshot(record);
   }
 
-  async status(id?: string): Promise<EphemeralAgentSnapshot[]> {
+  async status(id?: string, timeoutMs = 600_000, signal?: AbortSignal): Promise<EphemeralAgentSnapshot[]> {
     const records = id ? [this.requireRecord(id)] : Array.from(this.records.values());
+    const operationSignal = this.operationSignal(signal);
+    const deadline = Date.now() + timeoutMs;
     await Promise.all(records.map(async (record) => {
       if (record.status === "closed" || record.status === "failed") return;
       try {
-        const state = await record.client.getState();
+        const state = await this.getClientState(
+          record,
+          this.remainingTimeout(deadline, timeoutMs),
+          operationSignal,
+        );
         if (state.isStreaming) {
           record.status = "running";
           record.runStarted = true;
         }
         if (record.status === "idle") {
-          record.response = (await record.client.getLastAssistantText()) ?? undefined;
+          record.response = (await this.runClientRequest(
+            record,
+            () => record.client.getLastAssistantText(),
+            this.remainingTimeout(deadline, timeoutMs),
+            operationSignal,
+          )) ?? undefined;
         }
       } catch (error) {
-        await this.failRecord(record, error);
+        if (!this.recordFailed(record)) throw error;
       }
     }));
     return records.map((record) => this.snapshot(record));
@@ -427,13 +438,22 @@ export class EphemeralAgentManager {
     timeoutMs: number,
     signal: AbortSignal,
   ): Promise<{ isStreaming: boolean }> {
+    return this.runClientRequest(record, () => record.client.getState(), timeoutMs, signal);
+  }
+
+  private async runClientRequest<T>(
+    record: AgentRecord,
+    request: () => Promise<T>,
+    timeoutMs: number,
+    signal: AbortSignal,
+  ): Promise<T> {
     let rpcRejected = false;
     try {
-      const stateRequest = record.client.getState().catch((error) => {
+      const rpcRequest = request().catch((error) => {
         rpcRejected = true;
         throw error;
       });
-      return await raceOperation(stateRequest, timeoutMs, signal);
+      return await raceOperation(rpcRequest, timeoutMs, signal);
     } catch (error) {
       if (!rpcRejected) throw error;
       await this.failRecord(record, error);
@@ -492,17 +512,11 @@ export class EphemeralAgentManager {
       ]), signal);
       if (result === "settled") return;
 
-      let rpcRejected = false;
       try {
-        const stateRequest = record.client.getState().catch((error) => {
-          rpcRejected = true;
-          throw error;
-        });
-        await raceOperation(stateRequest, this.remainingTimeout(deadline, timeoutMs), signal);
+        await this.getClientState(record, this.remainingTimeout(deadline, timeoutMs), signal);
       } catch (error) {
-        if (!rpcRejected) throw error;
-        await this.failRecord(record, error);
-        return;
+        if (this.recordFailed(record)) return;
+        throw error;
       }
     }
   }
@@ -521,6 +535,10 @@ export class EphemeralAgentManager {
     const record = this.records.get(id);
     if (!record) throw new Error(`Unknown ephemeral agent: ${id}`);
     return record;
+  }
+
+  private recordFailed(record: AgentRecord): boolean {
+    return record.status === "failed";
   }
 
   private snapshot(record: AgentRecord): EphemeralAgentSnapshot {

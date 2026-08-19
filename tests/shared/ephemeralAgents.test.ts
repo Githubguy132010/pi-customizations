@@ -657,6 +657,38 @@ describe("ephemeral agent manager", () => {
     await manager.close(started.id);
   });
 
+  it("cancels a blocked status check", async () => {
+    const { manager, clients } = setup();
+    const started = await manager.spawn({ task: "Status", sourceRepo: "/source", background: true });
+    clients[0].getState.mockImplementationOnce(async () => new Promise(() => {}));
+    const controller = new AbortController();
+
+    const checking = manager.status(started.id, 1000, controller.signal);
+    controller.abort();
+
+    await expect(Promise.race([
+      checking.then(() => "resolved", (error: Error) => error.message),
+      new Promise<string>((resolve) => setTimeout(() => resolve("still pending"), 20)),
+    ])).resolves.toBe("Operation cancelled");
+  });
+
+  it("times out a blocked status check without failing the agent", async () => {
+    vi.useFakeTimers();
+    const { manager, clients } = setup();
+    const started = await manager.spawn({ task: "Status", sourceRepo: "/source", background: true });
+    clients[0].getState.mockImplementationOnce(async () => new Promise(() => {}));
+
+    const checking = manager.status(started.id, 1000);
+    const outcome = checking.then(() => "resolved", (error: Error) => error.message);
+    await vi.advanceTimersByTimeAsync(1000);
+
+    await expect(outcome).resolves.toBe("Agent did not finish within 1 seconds");
+    expect(clients[0].stop).not.toHaveBeenCalled();
+    await expect(manager.status(started.id)).resolves.toEqual([
+      expect.objectContaining({ status: "running", error: undefined }),
+    ]);
+  });
+
   it("cleans up when prompt preflight rejects", async () => {
     const client = new FakeClient();
     client.prompt.mockRejectedValueOnce(new Error("prompt rejected"));
