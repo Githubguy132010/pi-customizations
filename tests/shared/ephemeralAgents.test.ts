@@ -345,6 +345,80 @@ describe("ephemeral agent manager", () => {
     expect(client.stop).not.toHaveBeenCalled();
   });
 
+  it("reports when queue backpressure prevents message delivery", async () => {
+    vi.useFakeTimers();
+    let releasePrompt = () => {};
+    const promptBlocked = new Promise<void>((resolve) => { releasePrompt = resolve; });
+    const { manager, clients } = setup();
+    const started = await manager.spawn({ task: "First", sourceRepo: "/source", background: true });
+    const client = clients[0];
+    client.settle("first");
+    client.prompt.mockImplementationOnce(async () => promptBlocked);
+
+    const first = manager.send(started.id, "Second", { timeoutMs: 5000 });
+    await vi.waitFor(() => expect(client.prompt).toHaveBeenCalledTimes(2));
+    const second = manager.send(started.id, "Third", { timeoutMs: 1000 });
+    const outcome = second.then(() => "delivered", (error: Error) => error.message);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(outcome).resolves.toBe(`Previous message to agent ${started.id} is still in progress; message was not delivered`);
+    expect(client.followUp).not.toHaveBeenCalled();
+    expect(client.stop).not.toHaveBeenCalled();
+
+    const controller = new AbortController();
+    const cancelled = manager.send(started.id, "Fourth", { timeoutMs: 1000, signal: controller.signal });
+    controller.abort();
+    await expect(cancelled).rejects.toThrow("Operation cancelled");
+
+    releasePrompt();
+    await first;
+  });
+
+  it("starts a fresh delivery deadline after queue backpressure", async () => {
+    vi.useFakeTimers();
+    const { manager, clients } = setup();
+    const started = await manager.spawn({ task: "First", sourceRepo: "/source", background: true });
+    const client = clients[0];
+    client.settle("first");
+    const stateChecks: Array<(state: { isStreaming: boolean }) => void> = [];
+    client.getState.mockImplementation(() => new Promise((resolve) => stateChecks.push(resolve)));
+
+    const first = manager.send(started.id, "Second", { timeoutMs: 2000 });
+    const second = manager.send(started.id, "Third", { timeoutMs: 1000 });
+    const outcome = second.then(() => "delivered", (error: Error) => error.message);
+    await vi.waitFor(() => expect(stateChecks).toHaveLength(1));
+
+    await vi.advanceTimersByTimeAsync(750);
+    stateChecks[0]({ isStreaming: true });
+    await first;
+    await vi.waitFor(() => expect(stateChecks).toHaveLength(2));
+
+    await vi.advanceTimersByTimeAsync(500);
+    stateChecks[1]({ isStreaming: true });
+
+    await expect(outcome).resolves.toBe("delivered");
+    expect(client.followUp).toHaveBeenCalledTimes(2);
+    expect(client.stop).not.toHaveBeenCalled();
+  });
+
+  it("does not fail an agent when a message state check times out", async () => {
+    vi.useFakeTimers();
+    const { manager, clients } = setup();
+    const started = await manager.spawn({ task: "First", sourceRepo: "/source", background: true });
+    const client = clients[0];
+    client.getState.mockImplementationOnce(async () => new Promise(() => {}));
+
+    const sending = manager.send(started.id, "Second", { timeoutMs: 1000 });
+    const outcome = sending.then(() => "delivered", (error: Error) => error.message);
+    await vi.advanceTimersByTimeAsync(1000);
+
+    await expect(outcome).resolves.toBe("Agent did not finish within 1 seconds");
+    expect(client.stop).not.toHaveBeenCalled();
+    await expect(manager.status(started.id)).resolves.toEqual([
+      expect.objectContaining({ status: "running", error: undefined }),
+    ]);
+  });
+
   it("fails an agent when message delivery cannot read RPC state", async () => {
     const { manager, clients } = setup();
     const started = await manager.spawn({ task: "First", sourceRepo: "/source", background: true });

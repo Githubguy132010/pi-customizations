@@ -228,20 +228,26 @@ export class EphemeralAgentManager {
     }
     const timeoutMs = options.timeoutMs ?? 600_000;
     const signal = this.operationSignal(options.signal);
-    const deadline = Date.now() + timeoutMs;
     const previousMessage = record.messageQueue;
     const queuedMessage = deferred();
     record.messageQueue = previousMessage.then(() => queuedMessage.promise);
+    let deliveryDeadline: number | undefined;
 
     try {
-      await raceOperation(previousMessage, this.remainingTimeout(deadline, timeoutMs), signal);
-      await this.deliverMessage(record, message, deadline, timeoutMs, signal);
+      try {
+        await raceOperation(previousMessage, timeoutMs, signal);
+      } catch (error) {
+        if (signal.aborted) throw error;
+        throw new Error(`Previous message to agent ${id} is still in progress; message was not delivered`);
+      }
+      deliveryDeadline = Date.now() + timeoutMs;
+      await this.deliverMessage(record, message, deliveryDeadline, timeoutMs, signal);
     } finally {
       queuedMessage.resolve();
     }
 
     return options.wait
-      ? this.wait(id, this.remainingTimeout(deadline, timeoutMs), options.signal)
+      ? this.wait(id, this.remainingTimeout(deliveryDeadline!, timeoutMs), options.signal)
       : this.snapshot(record);
   }
 
@@ -421,9 +427,15 @@ export class EphemeralAgentManager {
     timeoutMs: number,
     signal: AbortSignal,
   ): Promise<{ isStreaming: boolean }> {
+    let rpcRejected = false;
     try {
-      return await raceOperation(record.client.getState(), timeoutMs, signal);
+      const stateRequest = record.client.getState().catch((error) => {
+        rpcRejected = true;
+        throw error;
+      });
+      return await raceOperation(stateRequest, timeoutMs, signal);
     } catch (error) {
+      if (!rpcRejected) throw error;
       await this.failRecord(record, error);
       throw error;
     }
