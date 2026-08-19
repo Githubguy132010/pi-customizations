@@ -37,7 +37,10 @@ class FakeClient {
 }
 
 const roots: string[] = [];
-afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
+afterEach(() => {
+  vi.useRealTimers();
+  roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true }));
+});
 
 function setup(setupOptions: {
   cloneRepo?: (source: string, destination: string) => Promise<void>;
@@ -109,6 +112,58 @@ describe("ephemeral agent manager", () => {
     await expect(secondWait).resolves.toMatchObject({ status: "idle", response: "second answer" });
   });
 
+  it("starts a fresh turn when RPC settles before the settlement event arrives", async () => {
+    const { manager, clients } = setup();
+    const started = await manager.spawn({ task: "First task", sourceRepo: "/source", background: true });
+    const client = clients[0];
+    client.streaming = false;
+
+    await expect(manager.send(started.id, "Start another turn")).resolves.toMatchObject({ status: "running" });
+    expect(client.steer).not.toHaveBeenCalled();
+    expect(client.prompt).toHaveBeenLastCalledWith("Start another turn");
+    expect(client.stop).not.toHaveBeenCalled();
+  });
+
+  it("keeps a healthy running agent alive when steering rejects", async () => {
+    const { manager, clients } = setup();
+    const started = await manager.spawn({ task: "First task", sourceRepo: "/source", background: true });
+    const client = clients[0];
+    client.steer.mockRejectedValueOnce(new Error("steer rejected"));
+
+    await expect(manager.send(started.id, "Try to steer")).rejects.toThrow("steer rejected");
+    expect(client.getState).toHaveBeenCalledTimes(2);
+    expect(client.stop).not.toHaveBeenCalled();
+    await expect(manager.status(started.id)).resolves.toEqual([
+      expect.objectContaining({ status: "running", error: undefined }),
+    ]);
+  });
+
+  it("retries a rejected steer as a fresh turn after the agent settles", async () => {
+    const { manager, clients } = setup();
+    const started = await manager.spawn({ task: "First task", sourceRepo: "/source", background: true });
+    const client = clients[0];
+    client.steer.mockImplementationOnce(async () => {
+      client.streaming = false;
+      throw new Error("run already settled");
+    });
+
+    await expect(manager.send(started.id, "Start another turn")).resolves.toMatchObject({ status: "running" });
+    expect(client.prompt).toHaveBeenLastCalledWith("Start another turn");
+    expect(client.stop).not.toHaveBeenCalled();
+  });
+
+  it("steers during the prompt acknowledgement gap instead of starting a second prompt", async () => {
+    const client = new FakeClient();
+    client.prompt.mockImplementationOnce(async () => {});
+    const { manager } = setup({ createClient: () => client });
+    const started = await manager.spawn({ task: "First task", sourceRepo: "/source", background: true });
+
+    await manager.send(started.id, "Queue this too");
+    expect(client.steer).toHaveBeenCalledWith("Queue this too");
+    expect(client.prompt).toHaveBeenCalledOnce();
+    expect(client.stop).not.toHaveBeenCalled();
+  });
+
   it("waits for settlement when prompt acknowledgement arrives before streaming starts", async () => {
     const { manager, clients } = setup();
     const started = await manager.spawn({ task: "Race startup", sourceRepo: "/source", background: true });
@@ -148,6 +203,22 @@ describe("ephemeral agent manager", () => {
       status: "failed",
       error: "Agent process exited",
     });
+  });
+
+  it("checks RPC liveness every 500 ms while waiting", async () => {
+    vi.useFakeTimers();
+    const { manager, clients } = setup();
+    const started = await manager.spawn({ task: "Wait", sourceRepo: "/source", background: true });
+    const client = clients[0];
+
+    const waiting = manager.wait(started.id, 1000);
+    await vi.advanceTimersByTimeAsync(499);
+    expect(client.getState).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(client.getState).toHaveBeenCalledOnce();
+
+    client.settle("done");
+    await expect(waiting).resolves.toMatchObject({ status: "idle", response: "done" });
   });
 
   it("reports a failed final assistant response as a failed agent", async () => {

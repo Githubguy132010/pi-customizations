@@ -67,6 +67,7 @@ interface AgentRecord {
   response?: string;
   error?: string;
   pendingError?: string;
+  runStarted: boolean;
 }
 
 export interface EphemeralAgentManagerOptions {
@@ -75,6 +76,8 @@ export interface EphemeralAgentManagerOptions {
   cloneRepo(source: string, destination: string, signal?: AbortSignal, timeoutMs?: number): Promise<void>;
   createClient(options: RpcClientOptions): AgentClient;
 }
+
+const LIVENESS_POLL_INTERVAL_MS = 500;
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void;
@@ -171,11 +174,13 @@ export class EphemeralAgentManager {
       record = {
         id, name, status: "starting", workspace, repo, mailbox, client,
         completion: run.promise, resolveCompletion: run.resolve,
+        runStarted: false,
       } as AgentRecord;
       record.unsubscribe = client.onEvent((event) => {
         if (event.type === "agent_start") {
           record.status = "running";
           record.pendingError = undefined;
+          record.runStarted = true;
         }
         if (event.type === "message_end" && event.message?.role === "assistant") {
           record.pendingError = event.message.stopReason === "error" || event.message.stopReason === "aborted"
@@ -185,6 +190,7 @@ export class EphemeralAgentManager {
         if (event.type === "agent_settled") {
           record.status = record.pendingError ? "failed" : "idle";
           record.error = record.pendingError;
+          record.runStarted = false;
           record.resolveCompletion();
         }
       });
@@ -224,21 +230,32 @@ export class EphemeralAgentManager {
       throw new Error(`Agent ${id} is ${record.status}`);
     }
 
-    try {
-      const command = record.status === "starting" || record.status === "running"
-        ? record.client.steer(message)
-        : (() => {
-            this.beginRun(record);
-            record.status = "running";
-            return record.client.prompt(message);
-          })();
-      await raceOperation(command, options.timeoutMs ?? 600_000, this.operationSignal(options.signal));
-    } catch (error) {
-      record.status = "failed";
-      record.error = errorMessage(error);
-      record.resolveCompletion();
-      await this.stopClient(record);
-      throw error;
+    const timeoutMs = options.timeoutMs ?? 600_000;
+    const signal = this.operationSignal(options.signal);
+    const state = await this.getClientState(record, timeoutMs, signal);
+    if (state.isStreaming) {
+      record.status = "running";
+      record.runStarted = true;
+    }
+
+    if (!state.isStreaming && (record.status === "idle" || record.runStarted)) {
+      this.finishRun(record);
+      await this.startFreshTurn(record, message, timeoutMs, signal);
+    } else {
+      try {
+        await raceOperation(record.client.steer(message), timeoutMs, signal);
+      } catch (steerError) {
+        const latestState = await this.getClientState(record, timeoutMs, signal);
+        if (latestState.isStreaming) {
+          record.status = "running";
+          record.runStarted = true;
+          throw steerError;
+        }
+        if (record.status !== "idle" && !record.runStarted) throw steerError;
+
+        this.finishRun(record);
+        await this.startFreshTurn(record, message, timeoutMs, signal);
+      }
     }
 
     return options.wait ? this.wait(id, options.timeoutMs, options.signal) : this.snapshot(record);
@@ -264,7 +281,10 @@ export class EphemeralAgentManager {
       if (record.status === "closed" || record.status === "failed") return;
       try {
         const state = await record.client.getState();
-        if (state.isStreaming) record.status = "running";
+        if (state.isStreaming) {
+          record.status = "running";
+          record.runStarted = true;
+        }
         if (record.status === "idle") {
           record.response = (await record.client.getLastAssistantText()) ?? undefined;
         }
@@ -336,6 +356,50 @@ export class EphemeralAgentManager {
     record.response = undefined;
     record.error = undefined;
     record.pendingError = undefined;
+    record.runStarted = false;
+  }
+
+  private finishRun(record: AgentRecord): void {
+    record.status = "idle";
+    record.runStarted = false;
+    record.resolveCompletion();
+  }
+
+  private async startFreshTurn(
+    record: AgentRecord,
+    message: string,
+    timeoutMs: number,
+    signal: AbortSignal,
+  ): Promise<void> {
+    this.beginRun(record);
+    record.status = "running";
+    try {
+      await raceOperation(record.client.prompt(message), timeoutMs, signal);
+    } catch (error) {
+      await this.failRecord(record, error);
+      throw error;
+    }
+  }
+
+  private async getClientState(
+    record: AgentRecord,
+    timeoutMs: number,
+    signal: AbortSignal,
+  ): Promise<{ isStreaming: boolean }> {
+    try {
+      return await raceOperation(record.client.getState(), timeoutMs, signal);
+    } catch (error) {
+      await this.failRecord(record, error);
+      throw error;
+    }
+  }
+
+  private async failRecord(record: AgentRecord, error: unknown): Promise<void> {
+    record.status = "failed";
+    record.error = errorMessage(error);
+    record.runStarted = false;
+    record.resolveCompletion();
+    await this.stopClient(record);
   }
 
   private operationSignal(signal?: AbortSignal): AbortSignal {
@@ -356,7 +420,10 @@ export class EphemeralAgentManager {
 
       const result = await raceAbort(Promise.race([
         completion.then(() => "settled" as const),
-        new Promise<"poll">((resolve) => setTimeout(() => resolve("poll"), Math.min(50, remaining))),
+        new Promise<"poll">((resolve) => setTimeout(
+          () => resolve("poll"),
+          Math.min(LIVENESS_POLL_INTERVAL_MS, remaining),
+        )),
       ]), signal);
       if (result === "settled") return;
 
