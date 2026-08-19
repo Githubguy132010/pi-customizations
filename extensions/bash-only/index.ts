@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-import { keepOnlyBashToolset } from "../shared/events/toolPolicy";
+import { ALLOWED_TOOL_NAMES, keepOnlyBashToolset } from "../shared/events/toolPolicy";
 
 export default function (pi: ExtensionAPI) {
   pi.on("session_start", () => {
@@ -12,7 +12,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("tool_call", (event: { toolName: string }) => {
-    if (event.toolName === "bash") {
+    if (ALLOWED_TOOL_NAMES.includes(event.toolName)) {
       return;
     }
 

@@ -1,5 +1,9 @@
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import bashOnly from "../../extensions/bash-only";
+import ephemeralAgents from "../../extensions/ephemeral-agents";
 import settle from "../../extensions/settle";
 import sessionWorkdir from "../../extensions/session-workdir";
 import slashVisibility from "../../extensions/slash-command-visibility";
@@ -12,13 +16,53 @@ function handlers(pi: any) {
 
 describe("extension entrypoints", () => {
   it("bash-only registers guards for lifecycle and tool calls", () => {
-    const pi = createPi({ getActiveTools: vi.fn(() => ["read", "bash"]) });
+    const pi = createPi({
+      getActiveTools: vi.fn(() => ["read", "bash"]),
+      getAllTools: vi.fn(() => [{ name: "bash" }, { name: "ephemeral_agent" }]),
+    });
     bashOnly(pi);
     const h = handlers(pi);
     h.session_start(); h.before_agent_start();
     expect(pi.setActiveTools).toHaveBeenCalledTimes(2);
+    expect(pi.setActiveTools).toHaveBeenCalledWith(["bash", "ephemeral_agent"]);
     expect(h.tool_call({ toolName: "bash" })).toBeUndefined();
+    expect(h.tool_call({ toolName: "ephemeral_agent" })).toBeUndefined();
+    expect(h.tool_call({ toolName: "ephemeral_report" })).toBeUndefined();
     expect(h.tool_call({ toolName: "read" })).toEqual({ block: true, terminate: true });
+  });
+
+  it("ephemeral-agents registers its parallel management tool and cleans up on shutdown", async () => {
+    const pi = createPi(); ephemeralAgents(pi);
+    expect(pi.registerTool).toHaveBeenCalledWith(expect.objectContaining({
+      name: "ephemeral_agent", executionMode: "parallel", execute: expect.any(Function),
+    }));
+    const tool = pi.registerTool.mock.calls[0][0];
+    await expect(tool.execute("call", { action: "status" }, undefined, undefined, createContext()))
+      .resolves.toMatchObject({ isError: false });
+    await handlers(pi).session_shutdown({}, createContext());
+  });
+
+  it("ephemeral-agents gives child processes a parent-reporting tool", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ephemeral-report-test-"));
+    const mailbox = join(root, "reports.jsonl");
+    const previousAgent = process.env.PI_EPHEMERAL_SUBAGENT;
+    const previousMailbox = process.env.PI_EPHEMERAL_MAILBOX;
+    process.env.PI_EPHEMERAL_SUBAGENT = "child-1";
+    process.env.PI_EPHEMERAL_MAILBOX = mailbox;
+    try {
+      const pi = createPi(); ephemeralAgents(pi);
+      expect(pi.registerTool).toHaveBeenCalledWith(expect.objectContaining({ name: "ephemeral_report" }));
+      const tool = pi.registerTool.mock.calls[0][0];
+      await expect(tool.execute("call", { kind: "question", message: " Need input " }))
+        .resolves.toMatchObject({ isError: false });
+      expect(JSON.parse(readFileSync(mailbox, "utf8"))).toMatchObject({ kind: "question", message: "Need input" });
+    } finally {
+      if (previousAgent === undefined) delete process.env.PI_EPHEMERAL_SUBAGENT;
+      else process.env.PI_EPHEMERAL_SUBAGENT = previousAgent;
+      if (previousMailbox === undefined) delete process.env.PI_EPHEMERAL_MAILBOX;
+      else process.env.PI_EPHEMERAL_MAILBOX = previousMailbox;
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("settle registers its command, integration, and status cleanup", async () => {

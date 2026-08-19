@@ -10,6 +10,7 @@ const packageManifest = JSON.parse(readFileSync(join(packageRoot, "package.json"
 const bundledExtensions = [
   "extensions/bash-only/index.ts",
   "extensions/session-workdir/index.ts",
+  "extensions/ephemeral-agents/index.ts",
   "extensions/slash-command-visibility/index.ts",
   "extensions/yeet/index.ts",
   "extensions/settle/index.ts",
