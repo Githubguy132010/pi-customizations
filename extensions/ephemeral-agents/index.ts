@@ -112,7 +112,7 @@ export default function (pi: ExtensionAPI, managerOverride?: EphemeralAgentContr
     label: "Ephemeral agent",
     description: [
       "Manage separate, short-lived coding agents. Actions: start creates a private scratch/repo checkout and runs a task;",
-      "status lists agents; message steers active work or starts a new turn when idle; wait waits for a result; close kills the process and normally deletes its workspace.",
+      "status lists agents; message queues a follow-up after active work or starts a new turn when idle; wait waits for a result; close kills the process and normally deletes its workspace.",
       "Use background starts for parallel work. Changes stay in each checkout until you inspect or copy them.",
     ].join(" "),
     promptSnippet: "Start and coordinate short-lived agents in private repository checkouts",

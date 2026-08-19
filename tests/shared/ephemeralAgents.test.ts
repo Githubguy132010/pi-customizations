@@ -13,7 +13,7 @@ class FakeClient {
   start = vi.fn(async () => {});
   stop = vi.fn(async () => {});
   prompt = vi.fn(async () => { this.streaming = true; this.emit("agent_start"); });
-  steer = vi.fn(async () => {});
+  followUp = vi.fn(async () => {});
   getState = vi.fn(async () => {
     if (this.stateError) throw this.stateError;
     return { isStreaming: this.streaming };
@@ -93,13 +93,13 @@ describe("ephemeral agent manager", () => {
     expect(initialPrompt).toContain("Task: Inspect the public interface");
   });
 
-  it("receives completion, steers active work, and starts a fresh turn when idle", async () => {
+  it("queues a follow-up during active work and starts a fresh turn when idle", async () => {
     const { manager, clients } = setup();
     const started = await manager.spawn({ task: "First task", sourceRepo: "/source", background: true });
     const client = clients[0];
 
     await manager.send(started.id, "Also check tests");
-    expect(client.steer).toHaveBeenCalledWith("Also check tests");
+    expect(client.followUp).toHaveBeenCalledWith("Also check tests");
 
     const waiting = manager.wait(started.id, 1000);
     client.settle("first answer");
@@ -124,7 +124,7 @@ describe("ephemeral agent manager", () => {
     client.settle("first answer");
 
     await expect(sending).resolves.toMatchObject({ status: "running" });
-    expect(client.steer).not.toHaveBeenCalled();
+    expect(client.followUp).not.toHaveBeenCalled();
     expect(client.prompt).toHaveBeenLastCalledWith("Start another turn");
     expect(client.stop).not.toHaveBeenCalled();
 
@@ -159,13 +159,13 @@ describe("ephemeral agent manager", () => {
     ]);
   });
 
-  it("keeps a healthy running agent alive when steering rejects", async () => {
+  it("keeps a healthy running agent alive when queueing a follow-up rejects", async () => {
     const { manager, clients } = setup();
     const started = await manager.spawn({ task: "First task", sourceRepo: "/source", background: true });
     const client = clients[0];
-    client.steer.mockRejectedValueOnce(new Error("steer rejected"));
+    client.followUp.mockRejectedValueOnce(new Error("follow-up rejected"));
 
-    await expect(manager.send(started.id, "Try to steer")).rejects.toThrow("steer rejected");
+    await expect(manager.send(started.id, "Queue this")).rejects.toThrow("follow-up rejected");
     expect(client.getState).toHaveBeenCalledTimes(2);
     expect(client.stop).not.toHaveBeenCalled();
     await expect(manager.status(started.id)).resolves.toEqual([
@@ -173,11 +173,11 @@ describe("ephemeral agent manager", () => {
     ]);
   });
 
-  it("retries a rejected steer as a fresh turn after the agent settles", async () => {
+  it("retries a rejected follow-up as a fresh turn after the agent settles", async () => {
     const { manager, clients } = setup();
     const started = await manager.spawn({ task: "First task", sourceRepo: "/source", background: true });
     const client = clients[0];
-    client.steer.mockImplementationOnce(async () => {
+    client.followUp.mockImplementationOnce(async () => {
       client.streaming = false;
       throw new Error("run already settled");
     });
@@ -191,14 +191,14 @@ describe("ephemeral agent manager", () => {
     expect(client.stop).not.toHaveBeenCalled();
   });
 
-  it("steers during the prompt acknowledgement gap instead of starting a second prompt", async () => {
+  it("queues a follow-up during the prompt acknowledgement gap instead of starting a second prompt", async () => {
     const client = new FakeClient();
     client.prompt.mockImplementationOnce(async () => {});
     const { manager } = setup({ createClient: () => client });
     const started = await manager.spawn({ task: "First task", sourceRepo: "/source", background: true });
 
     await manager.send(started.id, "Queue this too");
-    expect(client.steer).toHaveBeenCalledWith("Queue this too");
+    expect(client.followUp).toHaveBeenCalledWith("Queue this too");
     expect(client.prompt).toHaveBeenCalledOnce();
     expect(client.stop).not.toHaveBeenCalled();
   });

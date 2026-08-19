@@ -44,7 +44,7 @@ export interface AgentClient {
   start(): Promise<void>;
   stop(): Promise<void>;
   prompt(message: string): Promise<void>;
-  steer(message: string): Promise<void>;
+  followUp(message: string): Promise<void>;
   getState(): Promise<{ isStreaming: boolean }>;
   getLastAssistantText(): Promise<string | null>;
   onEvent(listener: (event: {
@@ -207,10 +207,7 @@ export class EphemeralAgentManager {
     } catch (error) {
       const failedRecord = this.records.get(id);
       if (failedRecord) {
-        failedRecord.status = "failed";
-        failedRecord.error = errorMessage(error);
-        failedRecord.resolveCompletion();
-        await this.stopClient(failedRecord);
+        await this.failRecord(failedRecord, error);
       }
       rmSync(workspace, { recursive: true, force: true });
       this.records.delete(id);
@@ -244,16 +241,16 @@ export class EphemeralAgentManager {
       await this.startFreshTurn(record, message, timeoutMs, signal);
     } else {
       try {
-        await raceOperation(record.client.steer(message), timeoutMs, signal);
-      } catch (steerError) {
+        await raceOperation(record.client.followUp(message), timeoutMs, signal);
+      } catch (followUpError) {
         const latestState = await this.getClientState(record, timeoutMs, signal);
         this.throwIfSettledWithFailure(record);
         if (latestState.isStreaming) {
           record.status = "running";
           record.runStarted = true;
-          throw steerError;
+          throw followUpError;
         }
-        if (record.status !== "idle" && !record.runStarted) throw steerError;
+        if (record.status !== "idle" && !record.runStarted) throw followUpError;
 
         await this.awaitSettledRun(record, timeoutMs, signal);
         await this.startFreshTurn(record, message, timeoutMs, signal);
@@ -291,10 +288,7 @@ export class EphemeralAgentManager {
           record.response = (await record.client.getLastAssistantText()) ?? undefined;
         }
       } catch (error) {
-        record.status = "failed";
-        record.error = errorMessage(error);
-        record.resolveCompletion();
-        await this.stopClient(record);
+        await this.failRecord(record, error);
       }
     }));
     return records.map((record) => this.snapshot(record));
@@ -447,10 +441,7 @@ export class EphemeralAgentManager {
       try {
         await record.client.getState();
       } catch (error) {
-        record.status = "failed";
-        record.error = errorMessage(error);
-        record.resolveCompletion();
-        await this.stopClient(record);
+        await this.failRecord(record, error);
         return;
       }
     }

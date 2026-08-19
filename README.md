@@ -87,7 +87,7 @@ npm link            # Link this checkout globally
 pi-coding-agent     # Run the linked CLI
 ```
 
-Tests use Vitest with mocked Pi APIs and command execution, so they do not modify real repositories, sessions, branches, or pull requests.
+Tests use Vitest with mocked Pi APIs. Command-execution tests use either mocks or disposable temporary Git repositories, so they do not modify real user repositories, sessions, branches, or pull requests.
 
 ## Publishing
 
