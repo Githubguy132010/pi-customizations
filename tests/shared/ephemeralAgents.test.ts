@@ -762,22 +762,19 @@ describe("ephemeral agent manager", () => {
     ]);
   });
 
-  it("keeps a successful result when a timed-out RPC rejects after settlement", async () => {
-    vi.useFakeTimers();
+  it("keeps a successful result when a status probe rejects after settlement", async () => {
     const stateCheck = controlledPromise<{ isStreaming: boolean }>();
     const { manager, clients } = setup();
     const started = await manager.spawn({ task: "Status", sourceRepo: "/source", background: true });
     clients[0].getState.mockImplementationOnce(() => stateCheck.promise);
 
     const checking = manager.status(started.id, 1000);
-    await vi.advanceTimersByTimeAsync(1000);
-    await expect(checking).resolves.toEqual([
-      expect.objectContaining({ status: "running", statusError: "Status check did not finish within 1 seconds" }),
-    ]);
-
     clients[0].settle("successful result");
     stateCheck.reject(new Error("Late RPC failure"));
-    await vi.waitFor(() => expect(clients[0].getLastAssistantText).not.toHaveBeenCalled());
+
+    await expect(checking).resolves.toEqual([
+      expect.objectContaining({ status: "idle", statusError: "Late RPC failure", error: undefined }),
+    ]);
 
     await expect(manager.status(started.id)).resolves.toEqual([
       expect.objectContaining({ status: "idle", response: "successful result", error: undefined }),

@@ -456,7 +456,7 @@ export class EphemeralAgentManager {
     signal: AbortSignal,
     timeoutSubject = "Agent",
   ): Promise<{ isStreaming: boolean }> {
-    return this.runClientRequest(record, () => record.client.getState(), timeoutMs, signal, timeoutSubject);
+    return this.runClientRequest(record, () => record.client.getState(), timeoutMs, signal, timeoutSubject, true);
   }
 
   private async runClientRequest<T>(
@@ -465,10 +465,12 @@ export class EphemeralAgentManager {
     timeoutMs: number,
     signal: AbortSignal,
     timeoutSubject = "Agent",
+    ignoreFailureWhenIdle = false,
   ): Promise<T> {
     let operationFinished = false;
     const rpcRequest = request().catch(async (error) => {
-      if (!isTerminalStatus(record.status) && (!operationFinished || record.status !== "idle")) {
+      const staleIdleFailure = record.status === "idle" && (ignoreFailureWhenIdle || operationFinished);
+      if (!isTerminalStatus(record.status) && !staleIdleFailure) {
         await this.failRecord(record, error);
       }
       throw error;
