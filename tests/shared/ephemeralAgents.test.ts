@@ -203,6 +203,22 @@ describe("ephemeral agent manager", () => {
     expect(client.stop).not.toHaveBeenCalled();
   });
 
+  it("keeps a prompt alive when a follow-up fails during its acknowledgement gap", async () => {
+    const client = new FakeClient();
+    client.prompt.mockImplementationOnce(async () => {});
+    client.followUp.mockRejectedValueOnce(new Error("cannot queue yet"));
+    const { manager } = setup({ createClient: () => client });
+    const started = await manager.spawn({ task: "First task", sourceRepo: "/source", background: true });
+
+    await expect(manager.send(started.id, "Queue this too")).rejects.toThrow("cannot queue yet");
+
+    expect(client.prompt).toHaveBeenCalledOnce();
+    expect(client.stop).not.toHaveBeenCalled();
+    await expect(manager.status(started.id)).resolves.toEqual([
+      expect.objectContaining({ status: "running", error: undefined }),
+    ]);
+  });
+
   it("waits for settlement when prompt acknowledgement arrives before streaming starts", async () => {
     const { manager, clients } = setup();
     const started = await manager.spawn({ task: "Race startup", sourceRepo: "/source", background: true });
@@ -258,6 +274,134 @@ describe("ephemeral agent manager", () => {
 
     client.settle("done");
     await expect(waiting).resolves.toMatchObject({ status: "idle", response: "done" });
+  });
+
+  it("times out when an RPC liveness check never settles", async () => {
+    vi.useFakeTimers();
+    const { manager, clients } = setup();
+    const started = await manager.spawn({ task: "Wait", sourceRepo: "/source", background: true });
+    clients[0].getState.mockImplementation(async () => new Promise(() => {}));
+
+    const waiting = manager.wait(started.id, 1000);
+    const result = expect(waiting).rejects.toThrow("Agent did not finish within 1 seconds");
+    await vi.advanceTimersByTimeAsync(1000);
+
+    await result;
+  });
+
+  it("cancels while an RPC liveness check is blocked", async () => {
+    vi.useFakeTimers();
+    const { manager, clients } = setup();
+    const started = await manager.spawn({ task: "Wait", sourceRepo: "/source", background: true });
+    clients[0].getState.mockImplementation(async () => new Promise(() => {}));
+    const controller = new AbortController();
+
+    const waiting = manager.wait(started.id, 1000, controller.signal);
+    const result = expect(waiting).rejects.toThrow("Operation cancelled");
+    await vi.advanceTimersByTimeAsync(500);
+    controller.abort();
+
+    await result;
+  });
+
+  it("times out when the final response RPC never settles", async () => {
+    vi.useFakeTimers();
+    const { manager, clients } = setup();
+    const started = await manager.spawn({ task: "Wait", sourceRepo: "/source", background: true });
+    clients[0].settle("done");
+    clients[0].getLastAssistantText.mockImplementation(async () => new Promise(() => {}));
+
+    const waiting = manager.wait(started.id, 1000);
+    const result = expect(waiting).rejects.toThrow("Agent did not finish within 1 seconds");
+    await vi.advanceTimersByTimeAsync(1000);
+
+    await result;
+  });
+
+  it("serializes parallel messages sent while an agent is idle", async () => {
+    const { manager, clients } = setup();
+    const started = await manager.spawn({ task: "First", sourceRepo: "/source", background: true });
+    const client = clients[0];
+    client.settle("first");
+
+    const stateChecks: Array<(state: { isStreaming: boolean }) => void> = [];
+    client.getState.mockImplementation(() => new Promise((resolve) => stateChecks.push(resolve)));
+
+    const first = manager.send(started.id, "Second");
+    const second = manager.send(started.id, "Third");
+    await vi.waitFor(() => expect(stateChecks).toHaveLength(1));
+
+    stateChecks[0]({ isStreaming: false });
+    await vi.waitFor(() => expect(client.prompt).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(stateChecks).toHaveLength(2));
+    stateChecks[1]({ isStreaming: true });
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      expect.objectContaining({ status: "running" }),
+      expect.objectContaining({ status: "running" }),
+    ]);
+    expect(client.prompt).toHaveBeenCalledTimes(2);
+    expect(client.followUp).toHaveBeenCalledWith("Third");
+    expect(client.stop).not.toHaveBeenCalled();
+  });
+
+  it("fails an agent when message delivery cannot read RPC state", async () => {
+    const { manager, clients } = setup();
+    const started = await manager.spawn({ task: "First", sourceRepo: "/source", background: true });
+    clients[0].stateError = new Error("RPC state failed");
+
+    await expect(manager.send(started.id, "Second")).rejects.toThrow("RPC state failed");
+    await expect(manager.status(started.id)).resolves.toEqual([
+      expect.objectContaining({ status: "failed", error: "RPC state failed" }),
+    ]);
+  });
+
+  it("rejects message delivery if the agent fails during its state check", async () => {
+    const { manager, clients } = setup();
+    const started = await manager.spawn({ task: "First", sourceRepo: "/source", background: true });
+    const client = clients[0];
+    let resolveState = (_state: { isStreaming: boolean }) => {};
+    client.getState.mockImplementationOnce(() => new Promise((resolve) => { resolveState = resolve; }));
+
+    const sending = manager.send(started.id, "Second");
+    await vi.waitFor(() => expect(client.getState).toHaveBeenCalledOnce());
+    client.emit({
+      type: "message_end",
+      message: { role: "assistant", stopReason: "error", errorMessage: "Provider failed" },
+    });
+    client.settle("failed");
+    resolveState({ isStreaming: false });
+
+    await expect(sending).rejects.toThrow("Provider failed");
+  });
+
+  it("rejects message delivery if the agent closes during its state check", async () => {
+    const { manager, clients } = setup();
+    const started = await manager.spawn({ task: "First", sourceRepo: "/source", background: true });
+    const client = clients[0];
+    let resolveState = (_state: { isStreaming: boolean }) => {};
+    client.getState.mockImplementationOnce(() => new Promise((resolve) => { resolveState = resolve; }));
+
+    const sending = manager.send(started.id, "Second");
+    await vi.waitFor(() => expect(client.getState).toHaveBeenCalledOnce());
+    await manager.close(started.id);
+    resolveState({ isStreaming: false });
+
+    await expect(sending).rejects.toThrow(`Agent ${started.id} is closed`);
+  });
+
+  it("does not start a fresh turn if the agent closes while settling", async () => {
+    const { manager, clients } = setup();
+    const started = await manager.spawn({ task: "First", sourceRepo: "/source", background: true });
+    const client = clients[0];
+    client.streaming = false;
+
+    const sending = manager.send(started.id, "Second");
+    await vi.waitFor(() => expect(client.getState).toHaveBeenCalledOnce());
+    await manager.close(started.id);
+
+    await expect(sending).rejects.toThrow(`Agent ${started.id} is closed`);
+    expect(client.prompt).toHaveBeenCalledOnce();
   });
 
   it("reports a failed final assistant response as a failed agent", async () => {

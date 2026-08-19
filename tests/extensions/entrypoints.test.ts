@@ -83,7 +83,9 @@ describe("extension entrypoints", () => {
   });
 
   it("creates the production RPC client without starting a process", () => {
-    expect(createRpcClient({ cliPath: "/unused" })).toBeInstanceOf(RpcClient);
+    const client = createRpcClient({ cliPath: "/unused" });
+    expect(client).toBeInstanceOf(RpcClient);
+    expect(client.followUp).toBe(RpcClient.prototype.followUp);
   });
 
   it("routes every ephemeral-agent action through the controller", async () => {
