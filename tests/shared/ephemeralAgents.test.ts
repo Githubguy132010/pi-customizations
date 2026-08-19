@@ -701,10 +701,16 @@ describe("ephemeral agent manager", () => {
     clients[0].getState.mockImplementationOnce(async () => new Promise(() => {}));
 
     const checking = manager.status(started.id, 1000);
-    const outcome = checking.then(() => "resolved", (error: Error) => error.message);
+    const outcome = checking.then((snapshots) => snapshots, (error: Error) => error.message);
     await vi.advanceTimersByTimeAsync(1000);
 
-    await expect(outcome).resolves.toBe("Status check did not finish within 1 seconds");
+    await expect(outcome).resolves.toEqual([
+      expect.objectContaining({
+        status: "running",
+        error: undefined,
+        statusError: "Status check did not finish within 1 seconds",
+      }),
+    ]);
     expect(clients[0].stop).not.toHaveBeenCalled();
     await expect(manager.status(started.id)).resolves.toEqual([
       expect.objectContaining({ status: "running", error: undefined }),
@@ -742,9 +748,11 @@ describe("ephemeral agent manager", () => {
     clients[0].getState.mockImplementationOnce(() => stateCheck.promise);
 
     const checking = manager.status(started.id, 1000);
-    const outcome = checking.then(() => "resolved", (error: Error) => error.message);
+    const outcome = checking.then((snapshots) => snapshots, (error: Error) => error.message);
     await vi.advanceTimersByTimeAsync(1000);
-    await expect(outcome).resolves.toBe("Status check did not finish within 1 seconds");
+    await expect(outcome).resolves.toEqual([
+      expect.objectContaining({ statusError: "Status check did not finish within 1 seconds" }),
+    ]);
     expect(clients[0].stop).not.toHaveBeenCalled();
 
     stateCheck.reject(new Error("Late RPC failure"));
@@ -754,6 +762,29 @@ describe("ephemeral agent manager", () => {
     ]);
   });
 
+  it("keeps a successful result when a timed-out RPC rejects after settlement", async () => {
+    vi.useFakeTimers();
+    const stateCheck = controlledPromise<{ isStreaming: boolean }>();
+    const { manager, clients } = setup();
+    const started = await manager.spawn({ task: "Status", sourceRepo: "/source", background: true });
+    clients[0].getState.mockImplementationOnce(() => stateCheck.promise);
+
+    const checking = manager.status(started.id, 1000);
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(checking).resolves.toEqual([
+      expect.objectContaining({ status: "running", statusError: "Status check did not finish within 1 seconds" }),
+    ]);
+
+    clients[0].settle("successful result");
+    stateCheck.reject(new Error("Late RPC failure"));
+    await vi.waitFor(() => expect(clients[0].getLastAssistantText).not.toHaveBeenCalled());
+
+    await expect(manager.status(started.id)).resolves.toEqual([
+      expect.objectContaining({ status: "idle", response: "successful result", error: undefined }),
+    ]);
+    expect(clients[0].stop).not.toHaveBeenCalled();
+  });
+
   it("does not fail an agent again when a late RPC rejection arrives after close", async () => {
     const stateCheck = controlledPromise<{ isStreaming: boolean }>();
     const { manager, clients } = setup();
@@ -761,12 +792,14 @@ describe("ephemeral agent manager", () => {
     clients[0].getState.mockImplementationOnce(() => stateCheck.promise);
 
     const checking = manager.status(started.id, 1000);
-    const outcome = checking.then(() => "resolved", (error: Error) => error.message);
+    const outcome = checking.then((snapshots) => snapshots, (error: Error) => error.message);
     await vi.waitFor(() => expect(clients[0].getState).toHaveBeenCalledOnce());
     await manager.close(started.id);
     stateCheck.reject(new Error("Late RPC failure"));
 
-    await expect(outcome).resolves.toBe("Late RPC failure");
+    await expect(outcome).resolves.toEqual([
+      expect.objectContaining({ status: "closed", statusError: "Late RPC failure" }),
+    ]);
     expect(clients[0].stop).toHaveBeenCalledOnce();
   });
 

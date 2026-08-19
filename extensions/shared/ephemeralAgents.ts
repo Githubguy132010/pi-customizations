@@ -313,7 +313,6 @@ export class EphemeralAgentManager {
       }
     }));
     if (operationSignal.aborted) throw new Error("Operation cancelled");
-    if (id && results[0]?.status === "rejected") throw results[0].reason;
     return records.map((record, index) => this.snapshot(
       record,
       results[index]?.status === "rejected" ? errorMessage(results[index].reason) : undefined,
@@ -467,11 +466,15 @@ export class EphemeralAgentManager {
     signal: AbortSignal,
     timeoutSubject = "Agent",
   ): Promise<T> {
+    let operationFinished = false;
     const rpcRequest = request().catch(async (error) => {
-      if (!isTerminalStatus(record.status)) await this.failRecord(record, error);
+      if (!isTerminalStatus(record.status) && (!operationFinished || record.status !== "idle")) {
+        await this.failRecord(record, error);
+      }
       throw error;
     });
-    return raceOperation(rpcRequest, timeoutMs, signal, timeoutSubject);
+    return raceOperation(rpcRequest, timeoutMs, signal, timeoutSubject)
+      .finally(() => { operationFinished = true; });
   }
 
   private throwIfSettledWithFailure(record: AgentRecord): void {
