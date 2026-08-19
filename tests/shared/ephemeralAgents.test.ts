@@ -374,7 +374,7 @@ describe("ephemeral agent manager", () => {
     await first;
   });
 
-  it("starts a fresh delivery deadline after queue backpressure", async () => {
+  it("uses one delivery deadline across queue backpressure", async () => {
     vi.useFakeTimers();
     const { manager, clients } = setup();
     const started = await manager.spawn({ task: "First", sourceRepo: "/source", background: true });
@@ -393,11 +393,11 @@ describe("ephemeral agent manager", () => {
     await first;
     await vi.waitFor(() => expect(stateChecks).toHaveLength(2));
 
-    await vi.advanceTimersByTimeAsync(500);
-    stateChecks[1]({ isStreaming: true });
+    await vi.advanceTimersByTimeAsync(250);
 
-    await expect(outcome).resolves.toBe("delivered");
-    expect(client.followUp).toHaveBeenCalledTimes(2);
+    await expect(Promise.race([outcome, Promise.resolve("still pending")]))
+      .resolves.toBe("Agent did not finish within 1 seconds");
+    expect(client.followUp).toHaveBeenCalledOnce();
     expect(client.stop).not.toHaveBeenCalled();
   });
 
@@ -661,6 +661,10 @@ describe("ephemeral agent manager", () => {
     const { manager, clients } = setup();
     const started = await manager.spawn({ task: "Status", sourceRepo: "/source", background: true });
     clients[0].getState.mockImplementationOnce(async () => new Promise(() => {}));
+    const preAborted = new AbortController();
+    preAborted.abort();
+    await expect(manager.status(started.id, 1000, preAborted.signal)).rejects.toThrow("Operation cancelled");
+
     const controller = new AbortController();
 
     const checking = manager.status(started.id, 1000, controller.signal);
@@ -682,11 +686,70 @@ describe("ephemeral agent manager", () => {
     const outcome = checking.then(() => "resolved", (error: Error) => error.message);
     await vi.advanceTimersByTimeAsync(1000);
 
-    await expect(outcome).resolves.toBe("Agent did not finish within 1 seconds");
+    await expect(outcome).resolves.toBe("Status check did not finish within 1 seconds");
     expect(clients[0].stop).not.toHaveBeenCalled();
     await expect(manager.status(started.id)).resolves.toEqual([
       expect.objectContaining({ status: "running", error: undefined }),
     ]);
+  });
+
+  it("returns other agent snapshots when one status check times out", async () => {
+    vi.useFakeTimers();
+    const { manager, clients } = setup();
+    const [responsive, blocked] = await Promise.all([
+      manager.spawn({ name: "responsive", task: "Status", sourceRepo: "/source", background: true }),
+      manager.spawn({ name: "blocked", task: "Status", sourceRepo: "/source", background: true }),
+    ]);
+    clients[1].getState.mockImplementationOnce(async () => new Promise(() => {}));
+
+    const checking = manager.status(undefined, 1000);
+    const outcome = checking.then((snapshots) => snapshots, (error: Error) => error.message);
+    await vi.advanceTimersByTimeAsync(1000);
+
+    await expect(outcome).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: responsive.id, status: "running", statusError: undefined }),
+      expect.objectContaining({
+        id: blocked.id,
+        status: "running",
+        statusError: "Status check did not finish within 1 seconds",
+      }),
+    ]));
+  });
+
+  it("fails an agent when an RPC request rejects after the caller times out", async () => {
+    vi.useFakeTimers();
+    let rejectState = (_error: Error) => {};
+    const { manager, clients } = setup();
+    const started = await manager.spawn({ task: "Status", sourceRepo: "/source", background: true });
+    clients[0].getState.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectState = reject; }));
+
+    const checking = manager.status(started.id, 1000);
+    const outcome = checking.then(() => "resolved", (error: Error) => error.message);
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(outcome).resolves.toBe("Status check did not finish within 1 seconds");
+    expect(clients[0].stop).not.toHaveBeenCalled();
+
+    rejectState(new Error("Late RPC failure"));
+    await vi.waitFor(() => expect(clients[0].stop).toHaveBeenCalledOnce());
+    await expect(manager.status(started.id)).resolves.toEqual([
+      expect.objectContaining({ status: "failed", error: "Late RPC failure" }),
+    ]);
+  });
+
+  it("does not fail an agent again when a late RPC rejection arrives after close", async () => {
+    let rejectState = (_error: Error) => {};
+    const { manager, clients } = setup();
+    const started = await manager.spawn({ task: "Status", sourceRepo: "/source", background: true });
+    clients[0].getState.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectState = reject; }));
+
+    const checking = manager.status(started.id, 1000);
+    const outcome = checking.then(() => "resolved", (error: Error) => error.message);
+    await vi.waitFor(() => expect(clients[0].getState).toHaveBeenCalledOnce());
+    await manager.close(started.id);
+    rejectState(new Error("Late RPC failure"));
+
+    await expect(outcome).resolves.toBe("Late RPC failure");
+    expect(clients[0].stop).toHaveBeenCalledOnce();
   });
 
   it("cleans up when prompt preflight rejects", async () => {

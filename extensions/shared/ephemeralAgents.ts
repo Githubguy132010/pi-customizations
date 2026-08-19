@@ -15,6 +15,7 @@ export interface EphemeralAgentSnapshot {
   response?: string;
   reports?: EphemeralAgentReport[];
   error?: string;
+  statusError?: string;
 }
 
 export interface EphemeralAgentReport {
@@ -109,7 +110,12 @@ function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   });
 }
 
-function raceOperation<T>(promise: Promise<T>, timeoutMs: number, signal?: AbortSignal): Promise<T> {
+function raceOperation<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  signal?: AbortSignal,
+  timeoutSubject = "Agent",
+): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -126,7 +132,7 @@ function raceOperation<T>(promise: Promise<T>, timeoutMs: number, signal?: Abort
       return;
     }
     timer = setTimeout(
-      () => finish(() => reject(new Error(`Agent did not finish within ${Math.ceil(timeoutMs / 1000)} seconds`))),
+      () => finish(() => reject(new Error(`${timeoutSubject} did not finish within ${Math.ceil(timeoutMs / 1000)} seconds`))),
       timeoutMs,
     );
     signal?.addEventListener("abort", abort, { once: true });
@@ -228,26 +234,25 @@ export class EphemeralAgentManager {
     }
     const timeoutMs = options.timeoutMs ?? 600_000;
     const signal = this.operationSignal(options.signal);
+    const deadline = Date.now() + timeoutMs;
     const previousMessage = record.messageQueue;
     const queuedMessage = deferred();
     record.messageQueue = previousMessage.then(() => queuedMessage.promise);
-    let deliveryDeadline: number | undefined;
 
     try {
       try {
-        await raceOperation(previousMessage, timeoutMs, signal);
+        await raceOperation(previousMessage, this.remainingTimeout(deadline, timeoutMs), signal);
       } catch (error) {
         if (signal.aborted) throw error;
         throw new Error(`Previous message to agent ${id} is still in progress; message was not delivered`);
       }
-      deliveryDeadline = Date.now() + timeoutMs;
-      await this.deliverMessage(record, message, deliveryDeadline, timeoutMs, signal);
+      await this.deliverMessage(record, message, deadline, timeoutMs, signal);
     } finally {
       queuedMessage.resolve();
     }
 
     return options.wait
-      ? this.wait(id, this.remainingTimeout(deliveryDeadline!, timeoutMs), options.signal)
+      ? this.wait(id, this.remainingTimeout(deadline, timeoutMs), options.signal)
       : this.snapshot(record);
   }
 
@@ -274,14 +279,16 @@ export class EphemeralAgentManager {
   async status(id?: string, timeoutMs = 600_000, signal?: AbortSignal): Promise<EphemeralAgentSnapshot[]> {
     const records = id ? [this.requireRecord(id)] : Array.from(this.records.values());
     const operationSignal = this.operationSignal(signal);
+    if (operationSignal.aborted) throw new Error("Operation cancelled");
     const deadline = Date.now() + timeoutMs;
-    await Promise.all(records.map(async (record) => {
+    const results = await Promise.allSettled(records.map(async (record) => {
       if (record.status === "closed" || record.status === "failed") return;
       try {
         const state = await this.getClientState(
           record,
-          this.remainingTimeout(deadline, timeoutMs),
+          this.remainingTimeout(deadline, timeoutMs, "Status check"),
           operationSignal,
+          "Status check",
         );
         if (state.isStreaming) {
           record.status = "running";
@@ -291,15 +298,21 @@ export class EphemeralAgentManager {
           record.response = (await this.runClientRequest(
             record,
             () => record.client.getLastAssistantText(),
-            this.remainingTimeout(deadline, timeoutMs),
+            this.remainingTimeout(deadline, timeoutMs, "Status check"),
             operationSignal,
+            "Status check",
           )) ?? undefined;
         }
       } catch (error) {
         if (!this.recordFailed(record)) throw error;
       }
     }));
-    return records.map((record) => this.snapshot(record));
+    if (operationSignal.aborted) throw new Error("Operation cancelled");
+    if (id && results[0]?.status === "rejected") throw results[0].reason;
+    return records.map((record, index) => this.snapshot(
+      record,
+      results[index]?.status === "rejected" ? errorMessage(results[index].reason) : undefined,
+    ));
   }
 
   async close(id: string, removeWorkspace = true): Promise<EphemeralAgentSnapshot> {
@@ -437,8 +450,9 @@ export class EphemeralAgentManager {
     record: AgentRecord,
     timeoutMs: number,
     signal: AbortSignal,
+    timeoutSubject = "Agent",
   ): Promise<{ isStreaming: boolean }> {
-    return this.runClientRequest(record, () => record.client.getState(), timeoutMs, signal);
+    return this.runClientRequest(record, () => record.client.getState(), timeoutMs, signal, timeoutSubject);
   }
 
   private async runClientRequest<T>(
@@ -446,19 +460,13 @@ export class EphemeralAgentManager {
     request: () => Promise<T>,
     timeoutMs: number,
     signal: AbortSignal,
+    timeoutSubject = "Agent",
   ): Promise<T> {
-    let rpcRejected = false;
-    try {
-      const rpcRequest = request().catch((error) => {
-        rpcRejected = true;
-        throw error;
-      });
-      return await raceOperation(rpcRequest, timeoutMs, signal);
-    } catch (error) {
-      if (!rpcRejected) throw error;
-      await this.failRecord(record, error);
+    const rpcRequest = request().catch(async (error) => {
+      if (!isTerminalStatus(record.status)) await this.failRecord(record, error);
       throw error;
-    }
+    });
+    return raceOperation(rpcRequest, timeoutMs, signal, timeoutSubject);
   }
 
   private throwIfSettledWithFailure(record: AgentRecord): void {
@@ -484,10 +492,10 @@ export class EphemeralAgentManager {
       : this.shutdownController.signal;
   }
 
-  private remainingTimeout(deadline: number, timeoutMs: number): number {
+  private remainingTimeout(deadline: number, timeoutMs: number, timeoutSubject = "Agent"): number {
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
-      throw new Error(`Agent did not finish within ${Math.ceil(timeoutMs / 1000)} seconds`);
+      throw new Error(`${timeoutSubject} did not finish within ${Math.ceil(timeoutMs / 1000)} seconds`);
     }
     return remaining;
   }
@@ -541,7 +549,7 @@ export class EphemeralAgentManager {
     return record.status === "failed";
   }
 
-  private snapshot(record: AgentRecord): EphemeralAgentSnapshot {
+  private snapshot(record: AgentRecord, statusError?: string): EphemeralAgentSnapshot {
     return {
       id: record.id,
       name: record.name,
@@ -551,6 +559,7 @@ export class EphemeralAgentManager {
       response: record.response,
       reports: this.readReports(record.mailbox),
       error: record.error,
+      statusError,
     };
   }
 
