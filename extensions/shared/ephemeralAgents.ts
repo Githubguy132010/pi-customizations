@@ -268,11 +268,16 @@ export class EphemeralAgentManager {
 
     if (isTerminalStatus(record.status)) return this.snapshot(record);
 
-    record.response = (await raceOperation(
-      record.client.getLastAssistantText(),
-      this.remainingTimeout(deadline, timeoutMs),
-      operationSignal,
-    )) ?? undefined;
+    try {
+      record.response = (await this.runClientRequest(
+        record,
+        () => record.client.getLastAssistantText(),
+        this.remainingTimeout(deadline, timeoutMs),
+        operationSignal,
+      )) ?? undefined;
+    } catch (error) {
+      if (!this.recordFailed(record)) throw error;
+    }
     return this.snapshot(record);
   }
 

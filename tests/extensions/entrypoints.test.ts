@@ -181,10 +181,8 @@ describe("extension entrypoints", () => {
   it("ephemeral-agents gives child processes a parent-reporting tool", async () => {
     const root = mkdtempSync(join(tmpdir(), "ephemeral-report-test-"));
     const mailbox = join(root, "reports.jsonl");
-    const previousAgent = process.env.PI_EPHEMERAL_SUBAGENT;
-    const previousMailbox = process.env.PI_EPHEMERAL_MAILBOX;
-    process.env.PI_EPHEMERAL_SUBAGENT = "child-1";
-    process.env.PI_EPHEMERAL_MAILBOX = mailbox;
+    vi.stubEnv("PI_EPHEMERAL_SUBAGENT", "child-1");
+    vi.stubEnv("PI_EPHEMERAL_MAILBOX", mailbox);
     try {
       const pi = createPi(); ephemeralAgents(pi);
       expect(pi.registerTool).toHaveBeenCalledWith(expect.objectContaining({ name: "ephemeral_report" }));
@@ -193,35 +191,27 @@ describe("extension entrypoints", () => {
         .resolves.toMatchObject({ isError: false });
       expect(JSON.parse(readFileSync(mailbox, "utf8"))).toMatchObject({ kind: "question", message: "Need input" });
     } finally {
-      if (previousAgent === undefined) delete process.env.PI_EPHEMERAL_SUBAGENT;
-      else process.env.PI_EPHEMERAL_SUBAGENT = previousAgent;
-      if (previousMailbox === undefined) delete process.env.PI_EPHEMERAL_MAILBOX;
-      else process.env.PI_EPHEMERAL_MAILBOX = previousMailbox;
+      vi.unstubAllEnvs();
       rmSync(root, { recursive: true, force: true });
     }
   });
 
   it("requires a mailbox and non-empty child report messages", async () => {
-    const previousAgent = process.env.PI_EPHEMERAL_SUBAGENT;
-    const previousMailbox = process.env.PI_EPHEMERAL_MAILBOX;
-    process.env.PI_EPHEMERAL_SUBAGENT = "child-1";
-    delete process.env.PI_EPHEMERAL_MAILBOX;
+    vi.stubEnv("PI_EPHEMERAL_SUBAGENT", "child-1");
+    vi.stubEnv("PI_EPHEMERAL_MAILBOX", undefined);
     try {
       const withoutMailbox = createPi();
       ephemeralAgents(withoutMailbox);
       expect(withoutMailbox.registerTool).not.toHaveBeenCalled();
 
-      process.env.PI_EPHEMERAL_MAILBOX = join(tmpdir(), "unused-ephemeral-mailbox.jsonl");
+      vi.stubEnv("PI_EPHEMERAL_MAILBOX", join(tmpdir(), "unused-ephemeral-mailbox.jsonl"));
       const pi = createPi();
       ephemeralAgents(pi);
       const tool = pi.registerTool.mock.calls[0][0];
       await expect(tool.execute("call", { kind: "update", message: "  " }))
         .resolves.toMatchObject({ isError: true, content: [{ text: "message is required" }] });
     } finally {
-      if (previousAgent === undefined) delete process.env.PI_EPHEMERAL_SUBAGENT;
-      else process.env.PI_EPHEMERAL_SUBAGENT = previousAgent;
-      if (previousMailbox === undefined) delete process.env.PI_EPHEMERAL_MAILBOX;
-      else process.env.PI_EPHEMERAL_MAILBOX = previousMailbox;
+      vi.unstubAllEnvs();
     }
   });
 

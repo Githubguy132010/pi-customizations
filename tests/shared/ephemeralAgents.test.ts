@@ -36,6 +36,16 @@ class FakeClient {
   }
 }
 
+function controlledPromise<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((onResolve, onReject) => {
+    resolve = onResolve;
+    reject = onReject;
+  });
+  return { promise, resolve, reject };
+}
+
 const roots: string[] = [];
 afterEach(() => {
   vi.useRealTimers();
@@ -318,6 +328,19 @@ describe("ephemeral agent manager", () => {
     await result;
   });
 
+  it("fails a settled agent when the final response RPC rejects", async () => {
+    const { manager, clients } = setup();
+    const started = await manager.spawn({ task: "Wait", sourceRepo: "/source", background: true });
+    clients[0].settle("unavailable");
+    clients[0].getLastAssistantText.mockRejectedValueOnce(new Error("Agent process exited"));
+
+    await expect(manager.wait(started.id, 1000)).resolves.toMatchObject({
+      status: "failed",
+      error: "Agent process exited",
+    });
+    expect(clients[0].stop).toHaveBeenCalledOnce();
+  });
+
   it("serializes parallel messages sent while an agent is idle", async () => {
     const { manager, clients } = setup();
     const started = await manager.spawn({ task: "First", sourceRepo: "/source", background: true });
@@ -347,13 +370,12 @@ describe("ephemeral agent manager", () => {
 
   it("reports when queue backpressure prevents message delivery", async () => {
     vi.useFakeTimers();
-    let releasePrompt = () => {};
-    const promptBlocked = new Promise<void>((resolve) => { releasePrompt = resolve; });
+    const promptBlock = controlledPromise();
     const { manager, clients } = setup();
     const started = await manager.spawn({ task: "First", sourceRepo: "/source", background: true });
     const client = clients[0];
     client.settle("first");
-    client.prompt.mockImplementationOnce(async () => promptBlocked);
+    client.prompt.mockImplementationOnce(async () => promptBlock.promise);
 
     const first = manager.send(started.id, "Second", { timeoutMs: 5000 });
     await vi.waitFor(() => expect(client.prompt).toHaveBeenCalledTimes(2));
@@ -370,7 +392,7 @@ describe("ephemeral agent manager", () => {
     controller.abort();
     await expect(cancelled).rejects.toThrow("Operation cancelled");
 
-    releasePrompt();
+    promptBlock.resolve();
     await first;
   });
 
@@ -434,8 +456,8 @@ describe("ephemeral agent manager", () => {
     const { manager, clients } = setup();
     const started = await manager.spawn({ task: "First", sourceRepo: "/source", background: true });
     const client = clients[0];
-    let resolveState = (_state: { isStreaming: boolean }) => {};
-    client.getState.mockImplementationOnce(() => new Promise((resolve) => { resolveState = resolve; }));
+    const stateCheck = controlledPromise<{ isStreaming: boolean }>();
+    client.getState.mockImplementationOnce(() => stateCheck.promise);
 
     const sending = manager.send(started.id, "Second");
     await vi.waitFor(() => expect(client.getState).toHaveBeenCalledOnce());
@@ -444,7 +466,7 @@ describe("ephemeral agent manager", () => {
       message: { role: "assistant", stopReason: "error", errorMessage: "Provider failed" },
     });
     client.settle("failed");
-    resolveState({ isStreaming: false });
+    stateCheck.resolve({ isStreaming: false });
 
     await expect(sending).rejects.toThrow("Provider failed");
   });
@@ -453,13 +475,13 @@ describe("ephemeral agent manager", () => {
     const { manager, clients } = setup();
     const started = await manager.spawn({ task: "First", sourceRepo: "/source", background: true });
     const client = clients[0];
-    let resolveState = (_state: { isStreaming: boolean }) => {};
-    client.getState.mockImplementationOnce(() => new Promise((resolve) => { resolveState = resolve; }));
+    const stateCheck = controlledPromise<{ isStreaming: boolean }>();
+    client.getState.mockImplementationOnce(() => stateCheck.promise);
 
     const sending = manager.send(started.id, "Second");
     await vi.waitFor(() => expect(client.getState).toHaveBeenCalledOnce());
     await manager.close(started.id);
-    resolveState({ isStreaming: false });
+    stateCheck.resolve({ isStreaming: false });
 
     await expect(sending).rejects.toThrow(`Agent ${started.id} is closed`);
   });
@@ -510,11 +532,10 @@ describe("ephemeral agent manager", () => {
   });
 
   it("does not start an agent when shutdown begins during checkout creation", async () => {
-    let releaseClone = () => {};
-    const cloneBlocked = new Promise<void>((resolve) => { releaseClone = resolve; });
+    const cloneBlock = controlledPromise();
     const { manager, clients, workspaceRoot, cloneRepo } = setup({
       cloneRepo: async (_source, destination) => {
-        await cloneBlocked;
+        await cloneBlock.promise;
         mkdirSync(destination, { recursive: true });
       },
     });
@@ -522,7 +543,7 @@ describe("ephemeral agent manager", () => {
     const spawning = manager.spawn({ task: "Too late", sourceRepo: "/source", background: true });
     await vi.waitFor(() => expect(cloneRepo).toHaveBeenCalledOnce());
     const disposing = manager.dispose();
-    releaseClone();
+    cloneBlock.resolve();
 
     await expect(spawning).rejects.toThrow("manager is closed");
     await disposing;
@@ -531,10 +552,9 @@ describe("ephemeral agent manager", () => {
   });
 
   it("cancels a blocked prompt acknowledgement during shutdown", async () => {
-    let releasePrompt = () => {};
-    const promptBlocked = new Promise<void>((resolve) => { releasePrompt = resolve; });
+    const promptBlock = controlledPromise();
     const client = new FakeClient();
-    client.prompt.mockImplementation(async () => promptBlocked);
+    client.prompt.mockImplementation(async () => promptBlock.promise);
     const { manager, workspaceRoot } = setup({ createClient: () => client });
 
     const spawning = manager.spawn({ task: "Blocked", sourceRepo: "/source", background: true });
@@ -547,7 +567,7 @@ describe("ephemeral agent manager", () => {
         new Promise<string>((resolve) => setTimeout(() => resolve("pending"), 20)),
       ])).resolves.toBe("disposed");
     } finally {
-      releasePrompt();
+      promptBlock.resolve();
       await spawning.catch(() => {});
     }
     await expect(spawning).rejects.toThrow("Operation cancelled");
@@ -556,10 +576,9 @@ describe("ephemeral agent manager", () => {
   });
 
   it("stops startup and removes its record when the tool call is cancelled", async () => {
-    let releasePrompt = () => {};
-    const promptBlocked = new Promise<void>((resolve) => { releasePrompt = resolve; });
+    const promptBlock = controlledPromise();
     const client = new FakeClient();
-    client.prompt.mockImplementation(async () => promptBlocked);
+    client.prompt.mockImplementation(async () => promptBlock.promise);
     const { manager } = setup({ createClient: () => client });
     const controller = new AbortController();
 
@@ -580,7 +599,7 @@ describe("ephemeral agent manager", () => {
       ]);
       expect(outcome).toBe("rejected");
     } finally {
-      releasePrompt();
+      promptBlock.resolve();
       await spawning.catch(() => {});
     }
     expect(client.stop).toHaveBeenCalledOnce();
@@ -588,12 +607,11 @@ describe("ephemeral agent manager", () => {
   });
 
   it("marks an idle agent failed when a new prompt is cancelled", async () => {
-    let releasePrompt = () => {};
-    const promptBlocked = new Promise<void>((resolve) => { releasePrompt = resolve; });
+    const promptBlock = controlledPromise();
     const { manager, clients } = setup();
     const started = await manager.spawn({ task: "First", sourceRepo: "/source", background: true });
     clients[0].settle("first done");
-    clients[0].prompt.mockImplementationOnce(async () => promptBlocked);
+    clients[0].prompt.mockImplementationOnce(async () => promptBlock.promise);
     const controller = new AbortController();
 
     const sending = manager.send(started.id, "Second", { timeoutMs: 1000, signal: controller.signal });
@@ -607,7 +625,7 @@ describe("ephemeral agent manager", () => {
         new Promise<string>((resolve) => setTimeout(() => resolve("pending"), 20)),
       ])).resolves.toBe("rejected");
     } finally {
-      releasePrompt();
+      promptBlock.resolve();
       await sending.catch(() => {});
     }
     await expect(manager.status(started.id)).resolves.toEqual([
@@ -718,10 +736,10 @@ describe("ephemeral agent manager", () => {
 
   it("fails an agent when an RPC request rejects after the caller times out", async () => {
     vi.useFakeTimers();
-    let rejectState = (_error: Error) => {};
+    const stateCheck = controlledPromise<{ isStreaming: boolean }>();
     const { manager, clients } = setup();
     const started = await manager.spawn({ task: "Status", sourceRepo: "/source", background: true });
-    clients[0].getState.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectState = reject; }));
+    clients[0].getState.mockImplementationOnce(() => stateCheck.promise);
 
     const checking = manager.status(started.id, 1000);
     const outcome = checking.then(() => "resolved", (error: Error) => error.message);
@@ -729,7 +747,7 @@ describe("ephemeral agent manager", () => {
     await expect(outcome).resolves.toBe("Status check did not finish within 1 seconds");
     expect(clients[0].stop).not.toHaveBeenCalled();
 
-    rejectState(new Error("Late RPC failure"));
+    stateCheck.reject(new Error("Late RPC failure"));
     await vi.waitFor(() => expect(clients[0].stop).toHaveBeenCalledOnce());
     await expect(manager.status(started.id)).resolves.toEqual([
       expect.objectContaining({ status: "failed", error: "Late RPC failure" }),
@@ -737,16 +755,16 @@ describe("ephemeral agent manager", () => {
   });
 
   it("does not fail an agent again when a late RPC rejection arrives after close", async () => {
-    let rejectState = (_error: Error) => {};
+    const stateCheck = controlledPromise<{ isStreaming: boolean }>();
     const { manager, clients } = setup();
     const started = await manager.spawn({ task: "Status", sourceRepo: "/source", background: true });
-    clients[0].getState.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectState = reject; }));
+    clients[0].getState.mockImplementationOnce(() => stateCheck.promise);
 
     const checking = manager.status(started.id, 1000);
     const outcome = checking.then(() => "resolved", (error: Error) => error.message);
     await vi.waitFor(() => expect(clients[0].getState).toHaveBeenCalledOnce());
     await manager.close(started.id);
-    rejectState(new Error("Late RPC failure"));
+    stateCheck.reject(new Error("Late RPC failure"));
 
     await expect(outcome).resolves.toBe("Late RPC failure");
     expect(clients[0].stop).toHaveBeenCalledOnce();
