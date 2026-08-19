@@ -233,19 +233,21 @@ export class EphemeralAgentManager {
     const timeoutMs = options.timeoutMs ?? 600_000;
     const signal = this.operationSignal(options.signal);
     const state = await this.getClientState(record, timeoutMs, signal);
+    this.throwIfSettledWithFailure(record);
     if (state.isStreaming) {
       record.status = "running";
       record.runStarted = true;
     }
 
     if (!state.isStreaming && (record.status === "idle" || record.runStarted)) {
-      this.finishRun(record);
+      await this.awaitSettledRun(record, timeoutMs, signal);
       await this.startFreshTurn(record, message, timeoutMs, signal);
     } else {
       try {
         await raceOperation(record.client.steer(message), timeoutMs, signal);
       } catch (steerError) {
         const latestState = await this.getClientState(record, timeoutMs, signal);
+        this.throwIfSettledWithFailure(record);
         if (latestState.isStreaming) {
           record.status = "running";
           record.runStarted = true;
@@ -253,7 +255,7 @@ export class EphemeralAgentManager {
         }
         if (record.status !== "idle" && !record.runStarted) throw steerError;
 
-        this.finishRun(record);
+        await this.awaitSettledRun(record, timeoutMs, signal);
         await this.startFreshTurn(record, message, timeoutMs, signal);
       }
     }
@@ -359,12 +361,6 @@ export class EphemeralAgentManager {
     record.runStarted = false;
   }
 
-  private finishRun(record: AgentRecord): void {
-    record.status = "idle";
-    record.runStarted = false;
-    record.resolveCompletion();
-  }
-
   private async startFreshTurn(
     record: AgentRecord,
     message: string,
@@ -381,6 +377,18 @@ export class EphemeralAgentManager {
     }
   }
 
+  private async awaitSettledRun(record: AgentRecord, timeoutMs: number, signal: AbortSignal): Promise<void> {
+    if (record.status === "starting" || record.status === "running") {
+      await raceOperation(record.completion, timeoutMs, signal);
+    }
+    if (record.status === "failed") {
+      throw new Error(record.error ?? `Agent ${record.id} failed`);
+    }
+    if (record.status !== "idle") {
+      throw new Error(`Agent ${record.id} is ${record.status}`);
+    }
+  }
+
   private async getClientState(
     record: AgentRecord,
     timeoutMs: number,
@@ -391,6 +399,15 @@ export class EphemeralAgentManager {
     } catch (error) {
       await this.failRecord(record, error);
       throw error;
+    }
+  }
+
+  private throwIfSettledWithFailure(record: AgentRecord): void {
+    if (record.status === "failed") {
+      throw new Error(record.error ?? `Agent ${record.id} failed`);
+    }
+    if (record.status === "closed") {
+      throw new Error(`Agent ${record.id} is closed`);
     }
   }
 

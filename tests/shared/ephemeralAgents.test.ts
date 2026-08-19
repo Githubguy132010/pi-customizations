@@ -118,10 +118,45 @@ describe("ephemeral agent manager", () => {
     const client = clients[0];
     client.streaming = false;
 
-    await expect(manager.send(started.id, "Start another turn")).resolves.toMatchObject({ status: "running" });
+    const sending = manager.send(started.id, "Start another turn");
+    await vi.waitFor(() => expect(client.getState).toHaveBeenCalledOnce());
+    expect(client.prompt).toHaveBeenCalledOnce();
+    client.settle("first answer");
+
+    await expect(sending).resolves.toMatchObject({ status: "running" });
     expect(client.steer).not.toHaveBeenCalled();
     expect(client.prompt).toHaveBeenLastCalledWith("Start another turn");
     expect(client.stop).not.toHaveBeenCalled();
+
+    const waiting = manager.wait(started.id, 1000);
+    const earlyResult = await Promise.race([
+      waiting.then(() => "finished"),
+      new Promise<string>((resolve) => setTimeout(() => resolve("pending"), 20)),
+    ]);
+    expect(earlyResult).toBe("pending");
+    client.settle("second answer");
+    await expect(waiting).resolves.toMatchObject({ status: "idle", response: "second answer" });
+  });
+
+  it("preserves a failed prior run while waiting for its settlement event", async () => {
+    const { manager, clients } = setup();
+    const started = await manager.spawn({ task: "First task", sourceRepo: "/source", background: true });
+    const client = clients[0];
+    client.streaming = false;
+    client.emit({
+      type: "message_end",
+      message: { role: "assistant", stopReason: "error", errorMessage: "Provider failed" },
+    });
+
+    const sending = manager.send(started.id, "Start another turn");
+    await vi.waitFor(() => expect(client.getState).toHaveBeenCalledOnce());
+    client.emit("agent_settled");
+
+    await expect(sending).rejects.toThrow("Provider failed");
+    expect(client.prompt).toHaveBeenCalledOnce();
+    await expect(manager.status(started.id)).resolves.toEqual([
+      expect.objectContaining({ status: "failed", error: "Provider failed" }),
+    ]);
   });
 
   it("keeps a healthy running agent alive when steering rejects", async () => {
@@ -147,7 +182,11 @@ describe("ephemeral agent manager", () => {
       throw new Error("run already settled");
     });
 
-    await expect(manager.send(started.id, "Start another turn")).resolves.toMatchObject({ status: "running" });
+    const sending = manager.send(started.id, "Start another turn");
+    await vi.waitFor(() => expect(client.getState).toHaveBeenCalledTimes(2));
+    client.settle("first answer");
+
+    await expect(sending).resolves.toMatchObject({ status: "running" });
     expect(client.prompt).toHaveBeenLastCalledWith("Start another turn");
     expect(client.stop).not.toHaveBeenCalled();
   });
