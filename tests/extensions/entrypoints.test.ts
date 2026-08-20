@@ -1,24 +1,291 @@
-import { describe, expect, it, vi } from "vitest";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { RpcClient } from "@earendil-works/pi-coding-agent";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import bashOnly from "../../extensions/bash-only";
+import ephemeralAgents, { cloneIsolatedRepo, createRpcClient } from "../../extensions/ephemeral-agents";
 import settle from "../../extensions/settle";
 import sessionWorkdir from "../../extensions/session-workdir";
 import slashVisibility from "../../extensions/slash-command-visibility";
 import yeet from "../../extensions/yeet";
-import { createContext, createPi } from "../helpers";
+import { createContext, createPi, result } from "../helpers";
+
+const execFileAsync = promisify(execFile);
 
 function handlers(pi: any) {
   return Object.fromEntries(pi.on.mock.calls.map(([name, handler]: any[]) => [name, handler]));
 }
 
+function agentSnapshot(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "agent-1",
+    name: "agent",
+    status: "idle",
+    workspace: "/tmp/agent-1",
+    repo: "/tmp/agent-1/scratch/repo",
+    ...overrides,
+  } as any;
+}
+
+function createAgentController() {
+  const snapshot = agentSnapshot();
+  return {
+    spawn: vi.fn(async () => snapshot),
+    status: vi.fn(async () => [snapshot]),
+    send: vi.fn(async () => snapshot),
+    wait: vi.fn(async () => snapshot),
+    close: vi.fn(async () => snapshot),
+    dispose: vi.fn(async () => {}),
+  };
+}
+
 describe("extension entrypoints", () => {
+  beforeEach(() => vi.stubEnv("PI_EXPERIMENTAL", undefined));
+  afterEach(() => vi.unstubAllEnvs());
+
   it("bash-only registers guards for lifecycle and tool calls", () => {
-    const pi = createPi({ getActiveTools: vi.fn(() => ["read", "bash"]) });
+    const pi = createPi({
+      getActiveTools: vi.fn(() => ["read", "bash"]),
+      getAllTools: vi.fn(() => [{ name: "bash" }, { name: "ephemeral_agent" }]),
+    });
     bashOnly(pi);
     const h = handlers(pi);
     h.session_start(); h.before_agent_start();
     expect(pi.setActiveTools).toHaveBeenCalledTimes(2);
+    expect(pi.setActiveTools).toHaveBeenCalledWith(["bash"]);
     expect(h.tool_call({ toolName: "bash" })).toBeUndefined();
+    expect(h.tool_call({ toolName: "ephemeral_agent" })).toEqual({ block: true, terminate: true });
+    expect(h.tool_call({ toolName: "ephemeral_report" })).toEqual({ block: true, terminate: true });
     expect(h.tool_call({ toolName: "read" })).toEqual({ block: true, terminate: true });
+  });
+
+  it("bash-only permits experimental coordination tools when enabled", () => {
+    vi.stubEnv("PI_EXPERIMENTAL", "1");
+    try {
+      const pi = createPi({
+        getActiveTools: vi.fn(() => ["bash"]),
+        getAllTools: vi.fn(() => [{ name: "bash" }, { name: "ephemeral_agent" }]),
+      });
+      bashOnly(pi);
+      const h = handlers(pi);
+
+      h.session_start();
+
+      expect(pi.setActiveTools).toHaveBeenCalledWith(["bash", "ephemeral_agent"]);
+      expect(h.tool_call({ toolName: "ephemeral_agent" })).toBeUndefined();
+      expect(h.tool_call({ toolName: "ephemeral_report" })).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("does not reset the allowed toolset when only its order differs", () => {
+    vi.stubEnv("PI_EXPERIMENTAL", "1");
+    try {
+      const pi = createPi({
+        getActiveTools: vi.fn(() => ["ephemeral_agent", "bash"]),
+        getAllTools: vi.fn(() => [{ name: "bash" }, { name: "ephemeral_agent" }]),
+      });
+      bashOnly(pi);
+
+      handlers(pi).session_start();
+
+      expect(pi.setActiveTools).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("ephemeral-agents registers its parallel management tool and cleans up on shutdown", async () => {
+    const pi = createPi(); ephemeralAgents(pi);
+    expect(pi.registerTool).toHaveBeenCalledWith(expect.objectContaining({
+      name: "ephemeral_agent", executionMode: "parallel", execute: expect.any(Function),
+    }));
+    const tool = pi.registerTool.mock.calls[0][0];
+    await expect(tool.execute("call", { action: "status" }, undefined, undefined, createContext()))
+      .resolves.toMatchObject({ isError: false });
+    await handlers(pi).session_shutdown({}, createContext());
+  });
+
+  it("creates the production RPC client without starting a process", () => {
+    const client = createRpcClient({ cliPath: "/unused" });
+    expect(client).toBeInstanceOf(RpcClient);
+    expect(client.followUp).toBe(RpcClient.prototype.followUp);
+  });
+
+  it("routes every ephemeral-agent action through the controller", async () => {
+    const manager = createAgentController();
+    const pi = createPi({ exec: vi.fn(async () => result("/repo\n")) });
+    ephemeralAgents(pi, manager);
+    const tool = pi.registerTool.mock.calls[0][0];
+    const signal = new AbortController().signal;
+    const ctx = createContext({ model: { provider: "openai", id: "gpt-test" }, thinkingLevel: "high" });
+
+    await tool.execute("start", {
+      action: "start", task: " Inspect ", name: "review", background: true, timeout_seconds: 5,
+    }, signal, undefined, ctx);
+    expect(manager.spawn).toHaveBeenCalledWith(expect.objectContaining({
+      task: "Inspect", sourceRepo: "/repo", background: true, timeoutMs: 5000, signal,
+      model: { provider: "openai", id: "gpt-test" }, thinkingLevel: "high",
+    }));
+
+    await tool.execute("status", {
+      action: "status", id: "agent-1", timeout_seconds: 5,
+    }, signal, undefined, ctx);
+    expect(manager.status).toHaveBeenCalledWith("agent-1", 5000, signal);
+
+    await tool.execute("message", {
+      action: "message", id: " agent-1 ", message: " Continue ", wait: true,
+    }, signal, undefined, ctx);
+    expect(manager.send).toHaveBeenCalledWith("agent-1", "Continue", {
+      wait: true, timeoutMs: 600000, signal,
+    });
+
+    await tool.execute("wait", { action: "wait", id: "agent-1" }, signal, undefined, ctx);
+    expect(manager.wait).toHaveBeenCalledWith("agent-1", 600000, signal);
+
+    await tool.execute("close", {
+      action: "close", id: "agent-1", remove_workspace: false,
+    }, signal, undefined, ctx);
+    expect(manager.close).toHaveBeenCalledWith("agent-1", false);
+
+    await handlers(pi).session_shutdown();
+    expect(manager.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("returns action validation and controller failures as tool errors", async () => {
+    const manager = createAgentController();
+    const pi = createPi({ exec: vi.fn(async () => result("", 1, "not a repo")) });
+    ephemeralAgents(pi, manager);
+    const tool = pi.registerTool.mock.calls[0][0];
+    const ctx = createContext();
+
+    await expect(tool.execute("start", { action: "start", task: "task" }, undefined, undefined, ctx))
+      .resolves.toMatchObject({ isError: true, content: [{ text: "Start ephemeral agents from inside a Git repository" }] });
+    await expect(tool.execute("message", { action: "message", id: " ", message: "x" }, undefined, undefined, ctx))
+      .resolves.toMatchObject({ isError: true, content: [{ text: "id is required for this action" }] });
+    await expect(tool.execute("wait", { action: "wait" }, undefined, undefined, ctx))
+      .resolves.toMatchObject({ isError: true });
+    await expect(tool.execute("close", { action: "close", id: " " }, undefined, undefined, ctx))
+      .resolves.toMatchObject({ isError: true });
+
+    manager.status.mockRejectedValueOnce("status failed");
+    await expect(tool.execute("status", { action: "status" }, undefined, undefined, ctx))
+      .resolves.toMatchObject({ isError: true, content: [{ text: "status failed" }] });
+  });
+
+  it("applies defaults for start, message, and close actions", async () => {
+    const manager = createAgentController();
+    const pi = createPi({ exec: vi.fn(async () => result("/repo\n")) });
+    ephemeralAgents(pi, manager);
+    const tool = pi.registerTool.mock.calls[0][0];
+    const ctx = createContext();
+
+    await tool.execute("start", { action: "start", task: "task" }, undefined, undefined, ctx);
+    expect(manager.spawn).toHaveBeenCalledWith(expect.objectContaining({
+      background: false, timeoutMs: 600000, model: undefined,
+    }));
+
+    await tool.execute("message", {
+      action: "message", id: "agent-1", message: "next",
+    }, undefined, undefined, ctx);
+    expect(manager.send).toHaveBeenCalledWith("agent-1", "next", expect.objectContaining({ wait: false }));
+
+    await tool.execute("close", { action: "close", id: "agent-1" }, undefined, undefined, ctx);
+    expect(manager.close).toHaveBeenCalledWith("agent-1", true);
+
+    await expect(tool.execute("start", { action: "start", task: " " }, undefined, undefined, ctx))
+      .resolves.toMatchObject({ isError: true, content: [{ text: "task is required for this action" }] });
+    await expect(tool.execute("message", {
+      action: "message", id: "agent-1", message: " ",
+    }, undefined, undefined, ctx)).resolves.toMatchObject({
+      isError: true, content: [{ text: "message is required for this action" }],
+    });
+  });
+
+  it("ephemeral-agents gives child processes a parent-reporting tool", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ephemeral-report-test-"));
+    const mailbox = join(root, "reports.jsonl");
+    vi.stubEnv("PI_EPHEMERAL_SUBAGENT", "child-1");
+    vi.stubEnv("PI_EPHEMERAL_MAILBOX", mailbox);
+    try {
+      const pi = createPi(); ephemeralAgents(pi);
+      expect(pi.registerTool).toHaveBeenCalledWith(expect.objectContaining({ name: "ephemeral_report" }));
+      const tool = pi.registerTool.mock.calls[0][0];
+      await expect(tool.execute("call", { kind: "question", message: " Need input " }))
+        .resolves.toMatchObject({ isError: false });
+      expect(JSON.parse(readFileSync(mailbox, "utf8"))).toMatchObject({ kind: "question", message: "Need input" });
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("requires a mailbox and non-empty child report messages", async () => {
+    vi.stubEnv("PI_EPHEMERAL_SUBAGENT", "child-1");
+    vi.stubEnv("PI_EPHEMERAL_MAILBOX", undefined);
+    try {
+      const withoutMailbox = createPi();
+      ephemeralAgents(withoutMailbox);
+      expect(withoutMailbox.registerTool).not.toHaveBeenCalled();
+
+      vi.stubEnv("PI_EPHEMERAL_MAILBOX", join(tmpdir(), "unused-ephemeral-mailbox.jsonl"));
+      const pi = createPi();
+      ephemeralAgents(pi);
+      const tool = pi.registerTool.mock.calls[0][0];
+      await expect(tool.execute("call", { kind: "update", message: "  " }))
+        .resolves.toMatchObject({ isError: true, content: [{ text: "message is required" }] });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("creates agent checkouts without a remote back to the source repository", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ephemeral-checkout-test-"));
+    const source = join(root, "source");
+    const destination = join(root, "agent");
+    try {
+      await execFileAsync("git", ["init", "--quiet", source]);
+      await execFileAsync("git", ["-C", source, "config", "user.email", "test@example.invalid"]);
+      await execFileAsync("git", ["-C", source, "config", "user.name", "Test"]);
+      writeFileSync(join(source, "README.md"), "source\n");
+      await execFileAsync("git", ["-C", source, "add", "README.md"]);
+      await execFileAsync("git", ["-C", source, "commit", "--quiet", "-m", "base"]);
+
+      const pi = createPi({
+        exec: vi.fn(async (command: string, args: string[], options: { cwd?: string } = {}) => {
+          try {
+            const result = await execFileAsync(command, args, { cwd: options.cwd });
+            return { code: 0, stdout: result.stdout, stderr: result.stderr, killed: false };
+          } catch (error: any) {
+            return { code: error.code ?? 1, stdout: error.stdout ?? "", stderr: error.stderr ?? error.message, killed: false };
+          }
+        }),
+      });
+
+      await cloneIsolatedRepo(pi, source, destination);
+      const remotes = await execFileAsync("git", ["-C", destination, "remote"]);
+      expect(remotes.stdout.trim()).toBe("");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports checkout and isolation command failures", async () => {
+    const cloneFailure = createPi({ exec: vi.fn(async () => result("", 1, "clone failed")) });
+    await expect(cloneIsolatedRepo(cloneFailure, "/source", "/destination"))
+      .rejects.toThrow("Could not create the agent checkout: clone failed");
+
+    const isolationFailure = createPi({
+      exec: vi.fn()
+        .mockResolvedValueOnce(result())
+        .mockResolvedValueOnce(result("", 1, "remove failed")),
+    });
+    await expect(cloneIsolatedRepo(isolationFailure, "/source", "/destination"))
+      .rejects.toThrow("Could not isolate the agent checkout: remove failed");
   });
 
   it("settle registers its command, integration, and status cleanup", async () => {

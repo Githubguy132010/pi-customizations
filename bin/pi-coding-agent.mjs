@@ -5,6 +5,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { main } from "@earendil-works/pi-coding-agent";
 
+import { areExperimentalFeaturesEnabled } from "../extensions/shared/experimental.mjs";
+
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const packageManifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
 const bundledExtensions = [
@@ -13,6 +15,9 @@ const bundledExtensions = [
   "extensions/slash-command-visibility/index.ts",
   "extensions/yeet/index.ts",
   "extensions/settle/index.ts",
+  ...(areExperimentalFeaturesEnabled()
+    ? ["extensions/ephemeral-agents/index.ts"]
+    : []),
 ];
 const extensionArgs = bundledExtensions.flatMap((extension) => [
   "--extension",

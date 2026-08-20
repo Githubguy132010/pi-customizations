@@ -24,15 +24,16 @@ pi-coding-agent --version
 
 ## Included customizations
 
-The standalone CLI always loads all five bundled extensions.
+The standalone CLI always loads five bundled extensions. Set `PI_EXPERIMENTAL=1` to also load experimental extensions for that process.
 
-| Extension | What it does |
-| --- | --- |
-| `bash-only` | Enforces a bash-only tool policy. |
-| `session-workdir` | Persists and restores each session's working directory. |
-| `slash-command-visibility` | Hides selected built-in commands from slash autocomplete. |
-| `yeet` | Adds `/yeet` for AI-assisted commits, pushes, and PR creation. |
-| `settle` | Adds `/settle` for merging or closing PRs and cleaning up branches. |
+| Extension | Availability | What it does |
+| --- | --- | --- |
+| `bash-only` | Always | Restricts agents to bash and the coordination tools available to their role. |
+| `session-workdir` | Always | Persists and restores each session's working directory. |
+| `slash-command-visibility` | Always | Hides selected built-in commands from slash autocomplete. |
+| `yeet` | Always | Adds `/yeet` for AI-assisted commits, pushes, and PR creation. |
+| `settle` | Always | Adds `/settle` for merging or closing PRs and cleaning up branches. |
+| `ephemeral-agents` | Experimental | Runs short-lived sub-agents in separate repository checkouts. |
 
 Extension entrypoints live under `extensions/<name>/index.ts`. Shared implementation modules live in `extensions/shared/` and are not separate extensions.
 
@@ -45,6 +46,29 @@ The following built-in commands are hidden from autocomplete:
 They remain executable when entered manually.
 
 ## Custom commands
+
+### Ephemeral agents
+
+Enable experimental features when starting the CLI:
+
+```bash
+PI_EXPERIMENTAL=1 pi-coding-agent
+```
+
+The main agent can use the `ephemeral_agent` tool to start, inspect, message, wait for, and close sub-agents. A sub-agent runs as a separate Pi process and gets this directory layout:
+
+```text
+<temporary-root>/<agent-id>/
+├── reports.jsonl
+└── scratch/
+    └── repo/
+```
+
+`repo/` is an independent local clone at the source repository's current `HEAD`. Uncommitted and untracked files from the source checkout are not copied, and the clone's source-pointing Git remote is removed. A background start returns immediately, so the main agent can run several agents at once. Sub-agents can post progress or questions to `reports.jsonl`; the main agent receives them through the `status` action and can answer with `message`.
+
+Changes remain in the sub-agent checkout. The main agent must inspect or copy them before calling `close`, which kills the child process and deletes its workspace by default. Quitting or reloading the parent session closes every remaining sub-agent and removes the shared temporary root.
+
+The separate checkout prevents agents from colliding by accident. It is not an operating-system security sandbox. The child is instructed to stay inside its workspace, but its shell process still has the user's normal filesystem permissions.
 
 ### `/yeet`
 
@@ -69,7 +93,7 @@ npm link            # Link this checkout globally
 pi-coding-agent     # Run the linked CLI
 ```
 
-Tests use Vitest with mocked Pi APIs and command execution, so they do not modify real repositories, sessions, branches, or pull requests.
+Tests use Vitest with mocked Pi APIs. Command-execution tests use either mocks or disposable temporary Git repositories, so they do not modify real user repositories, sessions, branches, or pull requests.
 
 ## Publishing
 

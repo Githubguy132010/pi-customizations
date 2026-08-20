@@ -48,9 +48,11 @@ export function createPi(overrides: Record<string, unknown> = {}) {
     exec: vi.fn(),
     events: createEventBus(),
     on: vi.fn(),
+    registerTool: vi.fn(),
     registerCommand: vi.fn(),
     appendEntry: vi.fn(),
     getActiveTools: vi.fn(() => ["bash"]),
+    getAllTools: vi.fn(() => [{ name: "bash" }]),
     setActiveTools: vi.fn(),
     ...overrides,
   } as any;
