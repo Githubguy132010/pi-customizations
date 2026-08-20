@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { RpcClient } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import bashOnly from "../../extensions/bash-only";
 import ephemeralAgents, { cloneIsolatedRepo, createRpcClient } from "../../extensions/ephemeral-agents";
 import settle from "../../extensions/settle";
@@ -43,6 +43,9 @@ function createAgentController() {
 }
 
 describe("extension entrypoints", () => {
+  beforeEach(() => vi.stubEnv("PI_EXPERIMENTAL", undefined));
+  afterEach(() => vi.unstubAllEnvs());
+
   it("bash-only registers guards for lifecycle and tool calls", () => {
     const pi = createPi({
       getActiveTools: vi.fn(() => ["read", "bash"]),
@@ -52,23 +55,48 @@ describe("extension entrypoints", () => {
     const h = handlers(pi);
     h.session_start(); h.before_agent_start();
     expect(pi.setActiveTools).toHaveBeenCalledTimes(2);
-    expect(pi.setActiveTools).toHaveBeenCalledWith(["bash", "ephemeral_agent"]);
+    expect(pi.setActiveTools).toHaveBeenCalledWith(["bash"]);
     expect(h.tool_call({ toolName: "bash" })).toBeUndefined();
-    expect(h.tool_call({ toolName: "ephemeral_agent" })).toBeUndefined();
-    expect(h.tool_call({ toolName: "ephemeral_report" })).toBeUndefined();
+    expect(h.tool_call({ toolName: "ephemeral_agent" })).toEqual({ block: true, terminate: true });
+    expect(h.tool_call({ toolName: "ephemeral_report" })).toEqual({ block: true, terminate: true });
     expect(h.tool_call({ toolName: "read" })).toEqual({ block: true, terminate: true });
   });
 
+  it("bash-only permits experimental coordination tools when enabled", () => {
+    vi.stubEnv("PI_EXPERIMENTAL", "1");
+    try {
+      const pi = createPi({
+        getActiveTools: vi.fn(() => ["bash"]),
+        getAllTools: vi.fn(() => [{ name: "bash" }, { name: "ephemeral_agent" }]),
+      });
+      bashOnly(pi);
+      const h = handlers(pi);
+
+      h.session_start();
+
+      expect(pi.setActiveTools).toHaveBeenCalledWith(["bash", "ephemeral_agent"]);
+      expect(h.tool_call({ toolName: "ephemeral_agent" })).toBeUndefined();
+      expect(h.tool_call({ toolName: "ephemeral_report" })).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("does not reset the allowed toolset when only its order differs", () => {
-    const pi = createPi({
-      getActiveTools: vi.fn(() => ["ephemeral_agent", "bash"]),
-      getAllTools: vi.fn(() => [{ name: "bash" }, { name: "ephemeral_agent" }]),
-    });
-    bashOnly(pi);
+    vi.stubEnv("PI_EXPERIMENTAL", "1");
+    try {
+      const pi = createPi({
+        getActiveTools: vi.fn(() => ["ephemeral_agent", "bash"]),
+        getAllTools: vi.fn(() => [{ name: "bash" }, { name: "ephemeral_agent" }]),
+      });
+      bashOnly(pi);
 
-    handlers(pi).session_start();
+      handlers(pi).session_start();
 
-    expect(pi.setActiveTools).not.toHaveBeenCalled();
+      expect(pi.setActiveTools).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("ephemeral-agents registers its parallel management tool and cleans up on shutdown", async () => {

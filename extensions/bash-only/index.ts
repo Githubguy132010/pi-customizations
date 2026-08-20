@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-import { ALLOWED_TOOL_NAMES, keepAllowedToolset } from "../shared/events/toolPolicy";
+import { isAllowedToolName, keepAllowedToolset } from "../shared/events/toolPolicy";
 
 export default function (pi: ExtensionAPI) {
   pi.on("session_start", () => {
@@ -12,7 +12,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("tool_call", (event: { toolName: string }) => {
-    if (ALLOWED_TOOL_NAMES.includes(event.toolName)) {
+    if (isAllowedToolName(event.toolName)) {
       return;
     }
 

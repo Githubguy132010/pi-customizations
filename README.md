@@ -24,16 +24,16 @@ pi-coding-agent --version
 
 ## Included customizations
 
-The standalone CLI always loads all six bundled extensions.
+The standalone CLI always loads five bundled extensions. Set `PI_EXPERIMENTAL=1` to also load experimental extensions for that process.
 
-| Extension | What it does |
-| --- | --- |
-| `bash-only` | Restricts agents to bash and the ephemeral-agent coordination tools available to their role. |
-| `session-workdir` | Persists and restores each session's working directory. |
-| `ephemeral-agents` | Runs short-lived sub-agents in separate repository checkouts. |
-| `slash-command-visibility` | Hides selected built-in commands from slash autocomplete. |
-| `yeet` | Adds `/yeet` for AI-assisted commits, pushes, and PR creation. |
-| `settle` | Adds `/settle` for merging or closing PRs and cleaning up branches. |
+| Extension | Availability | What it does |
+| --- | --- | --- |
+| `bash-only` | Always | Restricts agents to bash and the coordination tools available to their role. |
+| `session-workdir` | Always | Persists and restores each session's working directory. |
+| `slash-command-visibility` | Always | Hides selected built-in commands from slash autocomplete. |
+| `yeet` | Always | Adds `/yeet` for AI-assisted commits, pushes, and PR creation. |
+| `settle` | Always | Adds `/settle` for merging or closing PRs and cleaning up branches. |
+| `ephemeral-agents` | Experimental | Runs short-lived sub-agents in separate repository checkouts. |
 
 Extension entrypoints live under `extensions/<name>/index.ts`. Shared implementation modules live in `extensions/shared/` and are not separate extensions.
 
@@ -48,6 +48,12 @@ They remain executable when entered manually.
 ## Custom commands
 
 ### Ephemeral agents
+
+Enable experimental features when starting the CLI:
+
+```bash
+PI_EXPERIMENTAL=1 pi-coding-agent
+```
 
 The main agent can use the `ephemeral_agent` tool to start, inspect, message, wait for, and close sub-agents. A sub-agent runs as a separate Pi process and gets this directory layout:
 
