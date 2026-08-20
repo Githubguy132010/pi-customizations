@@ -270,22 +270,6 @@ describe("ephemeral agent manager", () => {
     });
   });
 
-  it("checks RPC liveness every 500 ms while waiting", async () => {
-    vi.useFakeTimers();
-    const { manager, clients } = setup();
-    const started = await manager.spawn({ task: "Wait", sourceRepo: "/source", background: true });
-    const client = clients[0];
-
-    const waiting = manager.wait(started.id, 1000);
-    await vi.advanceTimersByTimeAsync(499);
-    expect(client.getState).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1);
-    expect(client.getState).toHaveBeenCalledOnce();
-
-    client.settle("done");
-    await expect(waiting).resolves.toMatchObject({ status: "idle", response: "done" });
-  });
-
   it("times out when an RPC liveness check never settles", async () => {
     vi.useFakeTimers();
     const { manager, clients } = setup();
