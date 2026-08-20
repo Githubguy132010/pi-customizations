@@ -131,3 +131,18 @@ Then configure a GitHub Actions Trusted Publisher in the package settings on npm
 `.github/workflows/publish.yml` tests and publishes every push to `main` as `0.0.0-git.<12-character-commit-hash>`.
 
 The workflow uses GitHub OIDC instead of a stored npm token, publishes provenance, marks each new build as `latest`, and safely skips commits that are already present on npm. It can also be run manually from GitHub Actions.
+
+## Updating bundled Pi
+
+Dependabot checks daily for new versions of `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui`. It groups the two packages in one pull request. The merge job requires their versions to match.
+
+The `CI` workflow type-checks the extensions, runs the test suite, loads the CLI entrypoint, and checks the npm package contents. When that workflow passes for a patch update that changes only `package.json` and `package-lock.json`, GitHub squash-merges the tested commit and runs the publish workflow. Minor and major updates stay open for manual review because Pi is below version 1.0 and may make breaking changes in a minor release.
+
+To update Pi manually instead, replace `<version>` with the same version for both packages:
+
+```bash
+npm install --save-exact \
+  @earendil-works/pi-coding-agent@<version> \
+  @earendil-works/pi-tui@<version>
+npm run check
+```
