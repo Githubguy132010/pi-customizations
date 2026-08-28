@@ -10,7 +10,7 @@ Requires Node.js 22.19 or newer.
 
 ```bash
 npm install --global @thatrandomnerd69/pi-coding-agent
-pi-coding-agent
+pi
 ```
 
 A separate Pi installation is not required.
@@ -18,7 +18,7 @@ A separate Pi installation is not required.
 To check both the distribution build and bundled upstream Pi version:
 
 ```bash
-pi-coding-agent --version
+pi --version
 # @thatrandomnerd69/pi-coding-agent build 4f9c2a7d81b3 (Pi 0.84.1)
 ```
 
@@ -66,7 +66,7 @@ npm run check       # Type-check and run the test suite
 npm run test:watch  # Run tests in watch mode
 npm run coverage    # Generate text and HTML coverage reports
 npm link            # Link this checkout globally
-pi-coding-agent     # Run the linked CLI
+pi                # Run the linked CLI (pi-coding-agent remains as an alias)
 ```
 
 Tests use Vitest with mocked Pi APIs. Command-execution tests use either mocks or disposable temporary Git repositories, so they do not modify real user repositories, sessions, branches, or pull requests.

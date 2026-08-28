@@ -5,7 +5,11 @@ This file records user-facing changes to `@thatrandomnerd69/pi-coding-agent`.
 The project publishes commit-addressed versions in the form
 `0.0.0-git.<commit-hash>`, so entries are grouped by date instead of version.
 
-## Unreleased
+## 2026-08-28
+
+### Changed
+
+- Changed the default CLI alias from `pi-coding-agent` to `pi` (`pi-coding-agent` remains as a backward-compatible alias, `bin/pi.mjs` is now the primary entrypoint).
 
 ### Removed
 

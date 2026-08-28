@@ -2,7 +2,8 @@
   "name": "@thatrandomnerd69/pi-coding-agent",
   "version": "0.0.0-development",
   "bin": {
-    "pi-coding-agent": "bin/pi-coding-agent.mjs"
+    "pi": "bin/pi.mjs",
+    "pi-coding-agent": "bin/pi.mjs"
   },
   "keywords": [
     "coding-agent",
