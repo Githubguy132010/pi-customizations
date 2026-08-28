@@ -7,6 +7,10 @@ The project publishes commit-addressed versions in the form
 
 ## Unreleased
 
+### Removed
+
+- Removed the experimental `ephemeral-agents` extension (`ephemeral_agent` / `ephemeral_report` tools) and the `PI_EXPERIMENTAL` flag.
+
 ## 2026-08-20
 
 ### Added

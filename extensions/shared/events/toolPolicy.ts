@@ -1,14 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-import { areExperimentalFeaturesEnabled } from "../experimental.mjs";
-
-const EXPERIMENTAL_TOOL_NAMES = ["ephemeral_agent", "ephemeral_report"];
-
 export function allowedToolNames(): string[] {
-  return [
-    "bash",
-    ...(areExperimentalFeaturesEnabled() ? EXPERIMENTAL_TOOL_NAMES : []),
-  ];
+  return ["bash"];
 }
 
 export function isAllowedToolName(name: string): boolean {
