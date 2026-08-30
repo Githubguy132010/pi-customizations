@@ -119,7 +119,7 @@ export const DEFAULT_YEET_DEPTH = 1;
 export const MAX_YEET_DEPTH = 10;
 
 export function parseYeetDepth(rawArgs: string): number | undefined {
-  const regex = /(?:^|\s)(?:--depth|--max-depth|-d)(?:=|\s+)(\d+)\b/g;
+  const regex = /(?:^|\s)(?:--depth|--max-depth)(?:=|\s+)(\d+)\b/g;
   let match: RegExpExecArray | null;
   let last: string | undefined;
   while ((match = regex.exec(rawArgs)) !== null) {
@@ -137,7 +137,7 @@ export function parseYeetDepth(rawArgs: string): number | undefined {
 
 export function stripYeetDepthArgs(rawArgs: string): string {
   // Remove depth flags and normalize whitespace
-  const cleaned = rawArgs.replace(/(?:^|\s)(?:--depth|--max-depth|-d)(?:=|\s+)\d+\b/g, " ");
+  const cleaned = rawArgs.replace(/(?:^|\s)(?:--depth|--max-depth)(?:=|\s+)\d+\b/g, " ");
   return cleaned.replace(/\s+/g, " ").trim();
 }
 
