@@ -137,7 +137,13 @@ export function parseYeetDepth(rawArgs: string): number | undefined {
 
 export function stripYeetDepthArgs(rawArgs: string): string {
   // Remove depth flags and normalize whitespace
-  const cleaned = rawArgs.replace(/(?:^|\s)(?:--depth|--max-depth)(?:=|\s+)\d+\b/g, " ");
+  const cleaned = rawArgs.replace(
+    /(?:^|\s)(?:--depth|--max-depth)(?:=|\s+)(\d+)\b/g,
+    (flag, value: string) => {
+      const parsed = Number.parseInt(value, 10);
+      return Number.isFinite(parsed) && parsed > 0 ? " " : flag;
+    },
+  );
   return cleaned.replace(/\s+/g, " ").trim();
 }
 
