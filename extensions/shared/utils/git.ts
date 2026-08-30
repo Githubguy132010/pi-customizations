@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync, type Dirent } from "node:fs";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import type { ExtensionContext, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import type { ExecResultLike, GitRemote } from "../types";
@@ -188,6 +188,9 @@ export function findChildGitRepos(cwd: string, maxDepth = DEFAULT_YEET_DEPTH): s
         continue;
       }
       if (visited.has(real)) {
+        continue;
+      }
+      if (entry.isSymbolicLink() && !(real === startReal || real.startsWith(startReal + sep))) {
         continue;
       }
       visited.add(real);
