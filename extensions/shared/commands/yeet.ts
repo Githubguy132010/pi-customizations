@@ -4,6 +4,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { runCommand, summarizeError } from "../utils/exec";
 import { resolveSettleWorkflow } from "../integrations/settle";
 import {
+  MAX_YEET_DEPTH,
   collectGitRemotes,
   findChildGitRepos,
   formatPrBody,
@@ -275,7 +276,7 @@ export async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: Exten
     const raw = process.env.YEET_DEPTH ?? process.env.PI_YEET_DEPTH;
     if (!raw) return undefined;
     const n = Number.parseInt(raw, 10);
-    return Number.isFinite(n) && n > 0 ? Math.min(n, 10) : undefined;
+    return Number.isFinite(n) && n > 0 ? Math.min(n, MAX_YEET_DEPTH) : undefined;
   })();
   const depth = argDepth ?? envDepth ?? 1;
   const cleanArgs = stripYeetDepthArgs(args);
