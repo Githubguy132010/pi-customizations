@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, type Dirent } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionContext, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -113,4 +113,69 @@ export function formatPrBody(message: string, templateBody?: string): string {
   }
 
   return sections.join("\n\n");
+}
+
+export const DEFAULT_YEET_DEPTH = 1;
+export const MAX_YEET_DEPTH = 10;
+
+export function parseYeetDepth(rawArgs: string): number | undefined {
+  const regex = /(?:^|\s)(?:--depth|--max-depth|-d)(?:=|\s+)(\d+)\b/g;
+  let match: RegExpExecArray | null;
+  let last: string | undefined;
+  while ((match = regex.exec(rawArgs)) !== null) {
+    last = match[1];
+  }
+  if (last === undefined) {
+    return undefined;
+  }
+  const parsed = Number.parseInt(last, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return undefined;
+  }
+  return Math.min(parsed, MAX_YEET_DEPTH);
+}
+
+export function stripYeetDepthArgs(rawArgs: string): string {
+  // Remove depth flags and normalize whitespace
+  const cleaned = rawArgs.replace(/(?:^|\s)(?:--depth|--max-depth|-d)(?:=|\s+)\d+\b/g, " ");
+  return cleaned.replace(/\s+/g, " ").trim();
+}
+
+export function findChildGitRepos(cwd: string, maxDepth = DEFAULT_YEET_DEPTH): string[] {
+  const depth = Math.min(Math.max(1, Math.floor(maxDepth)), MAX_YEET_DEPTH);
+  const repos: string[] = [];
+  const queue: Array<{ dir: string; depth: number }> = [{ dir: cwd, depth: 0 }];
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (current.depth >= depth) {
+      continue;
+    }
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(current.dir, { withFileTypes: true }) as unknown as Dirent[];
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      if (entry.name.startsWith(".")) {
+        continue;
+      }
+      const full = join(current.dir, entry.name);
+      const gitPath = join(full, ".git");
+      if (existsSync(gitPath)) {
+        repos.push(full);
+        continue;
+      }
+      if (current.depth + 1 < depth) {
+        queue.push({ dir: full, depth: current.depth + 1 });
+      }
+    }
+  }
+
+  return repos.sort((a, b) => a.localeCompare(b));
 }

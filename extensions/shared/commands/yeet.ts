@@ -5,15 +5,19 @@ import { runCommand, summarizeError } from "../utils/exec";
 import { resolveSettleWorkflow } from "../integrations/settle";
 import {
   collectGitRemotes,
+  findChildGitRepos,
   formatPrBody,
   formatRemoteOption,
   findPullRequestTemplates,
   getChangedFiles,
   getLatestCommitMessage,
   parseRemoteChoice,
+  parseYeetDepth,
   readTemplate,
   resolveRepoRoot,
+  stripYeetDepthArgs,
 } from "../utils/git";
+import { resolveExtensionWorkdir } from "../integrations/workdir";
 
 export const YEET_STATUS_PREFIX = "yeet";
 
@@ -266,10 +270,43 @@ export async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: Exten
     return;
   }
 
-  const repoRoot = await resolveRepoRoot(pi, ctx);
+  const argDepth = parseYeetDepth(args);
+  const envDepth = (() => {
+    const raw = process.env.YEET_DEPTH ?? process.env.PI_YEET_DEPTH;
+    if (!raw) return undefined;
+    const n = Number.parseInt(raw, 10);
+    return Number.isFinite(n) && n > 0 ? Math.min(n, 10) : undefined;
+  })();
+  const depth = argDepth ?? envDepth ?? 1;
+  const cleanArgs = stripYeetDepthArgs(args);
+
+  let repoRoot = await resolveRepoRoot(pi, ctx);
   if (!repoRoot) {
-    ctx.ui.notify("/yeet: not in a git repository", "error");
-    return;
+    const cwd = resolveExtensionWorkdir(pi, ctx);
+    const candidates = findChildGitRepos(cwd, depth);
+    if (candidates.length === 0) {
+      ctx.ui.notify("/yeet: not in a git repository", "error");
+      return;
+    }
+    if (candidates.length === 1) {
+      repoRoot = candidates[0];
+    } else {
+      const options = candidates.map((candidate) => relative(cwd, candidate) || candidate);
+      const label = depth > 1
+        ? `Multiple repositories found (depth ${depth}). Select repository for /yeet`
+        : "Multiple repositories found. Select repository for /yeet";
+      const choice = await ctx.ui.select(label, options);
+      if (!choice) {
+        ctx.ui.notify("/yeet canceled", "warning");
+        return;
+      }
+      const index = options.indexOf(choice);
+      if (index === -1) {
+        ctx.ui.notify("/yeet canceled", "warning");
+        return;
+      }
+      repoRoot = candidates[index];
+    }
   }
 
   const status = await runCommand(pi, "git", ["status", "--short"], repoRoot);
@@ -301,7 +338,7 @@ export async function runYeetWorkflow(args: string, pi: ExtensionAPI, ctx: Exten
   const doPr = workflow === "Commit + push + create PR" || workflow === "Commit + push + create PR + settle";
   const doSettle = workflow === "Commit + push + create PR + settle";
 
-  let commitMessage = args.trim();
+  let commitMessage = cleanArgs.trim();
   if (hasChanges && !commitMessage) {
     ctx.ui.setStatus(YEET_STATUS_PREFIX, "Generating commit message...");
     try {
