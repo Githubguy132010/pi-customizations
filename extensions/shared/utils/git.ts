@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync, type Dirent } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync, type Dirent } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionContext, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -151,6 +151,15 @@ export function findChildGitRepos(cwd: string, maxDepth = DEFAULT_YEET_DEPTH): s
   const depth = Math.min(Math.max(1, Math.floor(maxDepth)), MAX_YEET_DEPTH);
   const repos: string[] = [];
   const queue: Array<{ dir: string; depth: number }> = [{ dir: cwd, depth: 0 }];
+  const visited = new Set<string>();
+  const startReal = (() => {
+    try {
+      return realpathSync(cwd);
+    } catch {
+      return cwd;
+    }
+  })();
+  visited.add(startReal);
 
   while (queue.length > 0) {
     const current = queue.shift()!;
@@ -165,13 +174,32 @@ export function findChildGitRepos(cwd: string, maxDepth = DEFAULT_YEET_DEPTH): s
     }
 
     for (const entry of entries) {
-      if (!entry.isDirectory()) {
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) {
         continue;
       }
       if (entry.name.startsWith(".")) {
         continue;
       }
       const full = join(current.dir, entry.name);
+      let real = full;
+      try {
+        real = realpathSync(full);
+      } catch {
+        continue;
+      }
+      if (visited.has(real)) {
+        continue;
+      }
+      visited.add(real);
+      let isDir = false;
+      try {
+        isDir = statSync(full).isDirectory();
+      } catch {
+        continue;
+      }
+      if (!isDir) {
+        continue;
+      }
       const gitPath = join(full, ".git");
       if (existsSync(gitPath)) {
         repos.push(full);
